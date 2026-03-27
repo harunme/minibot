@@ -6,6 +6,25 @@ x-common-config: &common-config
     - ~/.nanobot:/root/.nanobot
 
 services:
+  # === MQTT Broker (V1.0a M2) ===
+  mosquitto:
+    container_name: minibot-mosquitto
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - 1883:1883   # MQTT TCP
+      - 9001:9001   # MQTT WebSocket (可选)
+    volumes:
+      - ./deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-log:/mosquitto/log
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # === nanobot 核心网关 + 硬件 MQTT Channel ===
   nanobot-gateway:
     container_name: nanobot-gateway
     <<: *common-config
@@ -13,6 +32,11 @@ services:
     restart: unless-stopped
     ports:
       - 18790:18790
+    depends_on:
+      - mosquitto
+    environment:
+      - MQTT_BROKER_HOST=mosquitto
+      - MQTT_BROKER_PORT=1883
     deploy:
       resources:
         limits:
@@ -22,6 +46,31 @@ services:
           cpus: '0.25'
           memory: 256M
   
+  # === 管理后台 (V1.0b M6) ===
+  admin-backend:
+    container_name: minibot-admin
+    build:
+      context: ./admin/backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - 8080:8080
+    volumes:
+      - ~/.nanobot:/root/.nanobot
+    depends_on:
+      - mosquitto
+    environment:
+      - MQTT_BROKER_HOST=mosquitto
+      - MQTT_BROKER_PORT=1883
+    profiles:
+      - admin
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  # === CLI 工具 ===
   nanobot-cli:
     <<: *common-config
     profiles:
@@ -29,3 +78,7 @@ services:
     command: ["status"]
     stdin_open: true
     tty: true
+
+volumes:
+  mosquitto-data:
+  mosquitto-log:

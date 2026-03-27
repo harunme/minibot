@@ -20,12 +20,17 @@
 
 ## 0.1 当前进度
 
-| 里程碑 | 状态 | 说明 |
-|--------|------|------|
-| M1 - 设计评审 | ✅ 完成 | V1_DESIGN.md 已评审通过 |
-| M2 - MQTT 通道 | 🔧 进行中 | 硬件 MQTT Channel + Broker 部署 |
-| M3 - ASR/TTS | ⏳ 未开始 | 火山引擎 WebSocket 客户端 |
-| M4-M7 | ⏳ 未开始 | 对话链路 → 多租户 → 管理后台 → 集成验收 |
+> V1 拆为 V1.0a（M1-M4，核心对话链路）和 V1.0b（M5-M7，多租户+管理后台），详见 ROADMAP.md。
+
+| 里程碑 | 状态 | 阶段 | 说明 |
+|--------|------|------|------|
+| M1 - 设计评审 | ✅ 完成 | V1.0a | V1_DESIGN.md 已评审通过 |
+| M2 - MQTT 通道 | 📐 设计完成待编码 | V1.0a | 硬件 MQTT Channel + Broker 部署 + 测试客户端 |
+| M3 - ASR/TTS | ⏳ 未开始 | V1.0a | 火山引擎 WebSocket 客户端 |
+| M4 - 对话链路 | ⏳ 未开始 | V1.0a | 全链路打通（单租户） |
+| M5 - 多租户 | ⏳ 未开始 | V1.0b | aiosqlite 多数据库隔离 + 设备路由 |
+| M6 - 管理后台 | ⏳ 未开始 | V1.0b | FastAPI + React |
+| M7 - 集成验收 | ⏳ 未开始 | V1.0b | 全链路联调 + Kids-Chat |
 
 ---
 
@@ -111,11 +116,13 @@ python tools/hardware_test_client.py --device dev001 --token xxx --broker localh
 
 ## 5. V1 开发范围
 
+**阶段**：V1.0a（M1-M4 核心对话链路）→ V1.0b（M5-M7 多租户+管理后台）
+
 **里程碑**：M1 设计评审 → M2 MQTT通道 → M3 ASR/TTS → M4 对话链路 → M5 多租户 → M6 管理后台 → M7 集成验收
 
-**V1 包含**：硬件 MQTT Channel、火山引擎 ASR/TTS WebSocket 客户端（抽象层支持多厂商扩展）、MQTT Broker 部署、多租户框架、管理后台 MVP、Kids-Chat Skill、测试客户端。
+**V1 包含**：硬件 MQTT Channel、火山引擎 ASR/TTS WebSocket 客户端（抽象层支持多厂商扩展）、MQTT Broker 部署（JWT 认证）、`aiosqlite` 多租户框架（Repository 抽象层）、管理后台 MVP、Kids-Chat Skill、测试客户端。
 
-**V1 不包含 ⚠️**：RAG 知识库（V2）、硬件固件（V3）、音色克隆（V4）、移动端 App（V5b）。
+**V1 不包含 ⚠️**：RAG 知识库（V2）、硬件固件（V3）、音色克隆（V4，云厂商 API）、移动端 App（V5b）。
 
 > 详细设计见 `docs/design/v1/` 目录（按模块拆分，路由表见 `docs/design/CLAUDE.md`）。
 

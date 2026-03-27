@@ -78,23 +78,28 @@ CREATE TABLE device_configs (
 
 ```python
 class TenantManager:
-    """多租户管理器"""
+    """多租户管理器（全异步，基于 aiosqlite）"""
     
-    def get_family_by_device(self, device_id: str) -> Family | None:
+    async def get_family_by_device(self, device_id: str) -> Family | None:
         """设备 ID → 家庭（核心路由方法）"""
     
-    def get_tenant_db(self, family_id: str) -> sqlite3.Connection:
-        """获取租户数据库连接（带缓存）"""
+    async def get_tenant_db(self, family_id: str) -> aiosqlite.Connection:
+        """获取租户数据库连接（异步，带缓存）"""
     
-    def create_family(self, name: str) -> Family:
+    async def create_family(self, name: str) -> Family:
         """创建新家庭（自动初始化租户库 + 文件目录 + workspace）"""
     
-    def bind_device(self, device_id: str, family_id: str) -> Device:
+    async def bind_device(self, device_id: str, family_id: str) -> Device:
         """绑定设备到家庭"""
     
-    def unbind_device(self, device_id: str) -> None:
+    async def unbind_device(self, device_id: str) -> None:
         """解绑设备"""
 ```
+
+> **设计要点**：
+> - 全部使用 `aiosqlite` 异步操作，禁止同步 `sqlite3`，保持全异步架构
+> - 设计 Repository 抽象层（`FamilyRepository` / `DeviceRepository`），V5b 规模化时可迁移 PostgreSQL
+> - SQLite 写锁粒度为数据库级别，单家庭内并发写入（多设备同时对话）会争抢锁，通过 WAL 模式缓解
 
 ## 5.3 文件存储结构
 
