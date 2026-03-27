@@ -45,7 +45,7 @@ V1.0 核心对话链路 (MVP)
 - `websockets`（已有）— 后端对接火山引擎 ASR/TTS 流式 API
 - Mosquitto / EMQX — MQTT Broker（新增）
 - 火山引擎 ASR WebSocket API — 语音识别（新增，V1 主选；ASRProvider 抽象层支持扩展，未来可接阿里等）
-- 火山引擎 TTS WebSocket API — 语音合成（新增，V1 主选；TTSProvider 抽象层支持扩展）
+- 火山引擎 TTS WebSocket API — 语音合成（新增，V1 主选；TTSProvider 抽象层支持扩展，未来可接阿里等）
 
 ### 里程碑
 
@@ -62,7 +62,7 @@ V1.0 核心对话链路 (MVP)
 - nanobot 框架稳定运行
 - MQTT Broker（Mosquitto / EMQX）可用
 - 火山引擎 ASR/TTS WebSocket API 可用
-- ASR/TTS Provider 抽象层保留扩展性（Groq Whisper 可作 ASR 降级方案）
+- ASR/TTS Provider 抽象层保留扩展性（ASR/TTS 未来可接阿里等厂商）
 
 ---
 
@@ -245,7 +245,7 @@ graph LR
 
 | 风险 | 影响 | 应对策略 |
 |------|------|----------|
-| 火山引擎 ASR/TTS API 限制/变更 | V1 语音链路不可用 | ASR 可降级 Groq Whisper（框架已有），TTS 抽象层支持扩展其他厂商；ASR/TTS Provider 接口统一可快速切换 |
+| 火山引擎 ASR/TTS API 限制/变更 | V1 语音链路不可用 | ASR/TTS 抽象层支持扩展其他厂商（阿里等）；ASR/TTS Provider 接口统一可快速切换 |
 | MQTT Broker 性能瓶颈 | 设备接入受限 | V1 用 Mosquitto 验证，生产切 EMQX 支撑百万连接 |
 | 音频延迟过高（MQTT→ASR→Agent→TTS→MQTT 全链路） | 用户体验差 | 流式合成 + Opus 压缩，目标全链路首字节 < 1s |
 | ChromaDB 性能瓶颈 | V2 知识库检索慢 | 预留切换 Milvus 的接口抽象 |

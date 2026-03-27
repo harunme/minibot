@@ -613,7 +613,6 @@ class VolcengineASRProvider(ASRProvider):
 #   class AliyunASRProvider(ASRProvider):  # 阿里云 ASR
 #   class XXXASRProvider(ASRProvider):     # 其他厂商
 # 新增 Provider 只需继承 ASRProvider 并实现抽象方法，配置中切换 provider 即可。
-# Groq Whisper 作为降级方案保留（nanobot 框架已内置 transcription.py）。
 ```
 
 ### 4.3 TTS 客户端（火山引擎语音合成）
@@ -725,9 +724,6 @@ class VolcengineTTSProvider(TTSProvider):
       "token": "xxx",
       "cluster": "volcengine_streaming_common",
       "language": "zh-CN"
-    },
-    "groq_whisper": {
-      "apiKey": "sk-xxx"               // 降级方案：沿用 nanobot 已有的 Groq Whisper
     }
   },
   "tts": {
@@ -1024,9 +1020,6 @@ metadata: '{"nanobot": {"always": true}}'
       "token": "xxx",
       "cluster": "volcengine_streaming_common",
       "language": "zh-CN"
-    },
-    "groq_whisper": {
-      "apiKey": "sk-xxx"
     }
   },
   
@@ -1073,7 +1066,6 @@ class HardwareChannelConfig(Base):
 class ASRConfig(Base):
     provider: str = "volcengine"
     volcengine: VolcengineASRConfig = Field(default_factory=VolcengineASRConfig)
-    groq_whisper: GroqWhisperConfig = Field(default_factory=GroqWhisperConfig)  # 降级方案
     # 抽象层预留扩展，未来可追加阿里等厂商配置
 
 class TTSConfig(Base):

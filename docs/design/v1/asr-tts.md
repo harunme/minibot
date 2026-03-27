@@ -39,7 +39,6 @@ class VolcengineASRProvider(ASRProvider):
     # recognize_stream(): 并行发送音频 + 接收结果
 
 # 扩展：未来可新增 AliyunASRProvider(ASRProvider) 等
-# 降级：Groq Whisper 已有框架实现（nanobot transcription.py），可作降级方案
 ```
 
 ## 4.3 TTS 客户端（火山引擎语音合成）
@@ -81,8 +80,7 @@ class VolcengineTTSProvider(TTSProvider):
 {
   "asr": {
     "provider": "volcengine",           // V1 主选；抽象层支持扩展
-    "volcengine": { "appId": "xxx", "token": "xxx", "cluster": "volcengine_streaming_common", "language": "zh-CN" },
-    "groq_whisper": { "apiKey": "sk-xxx" }  // 降级方案
+    "volcengine": { "appId": "xxx", "token": "xxx", "cluster": "volcengine_streaming_common", "language": "zh-CN" }
   },
   "tts": {
     "provider": "volcengine",           // V1 主选；抽象层支持扩展

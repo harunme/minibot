@@ -57,7 +57,6 @@ class HardwareChannelConfig(Base):
 class ASRConfig(Base):
     provider: str = "volcengine"
     volcengine: VolcengineASRConfig = Field(default_factory=VolcengineASRConfig)
-    groq_whisper: GroqWhisperConfig = Field(default_factory=GroqWhisperConfig)  # 降级方案
     # 抽象层预留扩展，未来可追加阿里等厂商配置
 
 class TTSConfig(Base):
