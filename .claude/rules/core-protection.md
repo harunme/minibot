@@ -1,4 +1,5 @@
 ---
+description: 核心框架文件保护 — 禁止修改 agent/bus/session/cli 等核心模块，所有功能通过扩展点接入
 paths:
   - "nanobot/agent/**"
   - "nanobot/bus/**"

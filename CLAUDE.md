@@ -6,16 +6,26 @@
 
 <!-- 
 维护者注意：
-- 根 CLAUDE.md 目标行数 ≤ 150 行，超出请考虑外移到 docs/ 或 .claude/rules/
+- 根 CLAUDE.md 目标行数 ≤ 200 行，超出请考虑外移到 docs/ 或 .claude/rules/
 - 下方的禁止修改列表需要随框架版本更新，当前 nanobot 版本为 0.1.4.post5
 - 路径特定规则已拆分到 .claude/rules/ 目录，见 channel-development.md 和 core-protection.md
+- 「当前进度」节(§0.1)需随开发推进及时更新
 -->
 
 ## 0. 上下文引用
 
 - 版本路线图详见 `docs/ROADMAP.md`（V1-V4 范围和里程碑）
 - 技术决策详见 `docs/DECISIONS.md`
-- 详细设计按版本拆分在 `docs/design/` 下（开发具体模块时再读对应章节）
+- 详细设计按版本拆分在 `docs/design/v1/` 下（开发具体模块时只读对应文件，见 `docs/design/CLAUDE.md` 路由表）
+
+## 0.1 当前进度
+
+| 里程碑 | 状态 | 说明 |
+|--------|------|------|
+| M1 - 设计评审 | ✅ 完成 | V1_DESIGN.md 已评审通过 |
+| M2 - MQTT 通道 | 🔧 进行中 | 硬件 MQTT Channel + Broker 部署 |
+| M3 - ASR/TTS | ⏳ 未开始 | 火山引擎 WebSocket 客户端 |
+| M4-M7 | ⏳ 未开始 | 对话链路 → 多租户 → 管理后台 → 集成验收 |
 
 ---
 
@@ -107,7 +117,7 @@ python tools/hardware_test_client.py --device dev001 --token xxx --broker localh
 
 **V1 不包含 ⚠️**：RAG 知识库（V2）、音色克隆（V3）、硬件固件（V4）、移动端 App。
 
-> 详细设计见 `docs/design/V1_DESIGN.md`，按模块章节参考。
+> 详细设计见 `docs/design/v1/` 目录（按模块拆分，路由表见 `docs/design/CLAUDE.md`）。
 
 ---
 
@@ -123,7 +133,7 @@ python tools/hardware_test_client.py --device dev001 --token xxx --broker localh
 
 - 当前分支：`develop`，不直接推送 `main` 或 `nightly`
 - 提交格式：`<type>(<scope>): <description>`（type: feat/fix/docs/refactor/test/chore）
-- 开发新模块前必须先读 `docs/design/V1_DESIGN.md` 对应章节
+- 开发新模块前必须先读 `docs/design/v1/` 对应章节文件（路由表见 `docs/design/CLAUDE.md`）
 
 ---
 
@@ -140,6 +150,31 @@ python tools/hardware_test_client.py --device dev001 --token xxx --broker localh
 - ❌ `print()` 做日志 / 阻塞 I/O / 硬编码密钥 / 拼接 SQL / 裸 `except`
 - ❌ 删除或修改现有测试 / 添加无版本约束依赖
 - ❌ 一次性重写大文件（用精确替换编辑）
+
+---
+
+## 9. 常见陷阱
+
+- MQTT 测试时确保 Mosquitto 已启动（`brew services list | grep mosquitto`）
+- `pytest-asyncio` 需要 `asyncio_mode = "auto"`（已在 `pyproject.toml` 配置），否则异步测试会被静默跳过
+- `config/schema.py` 修改后运行 `pytest tests/test_config.py` 验证兼容性
+- 火山引擎 WebSocket API 有连接超时限制，测试中务必 Mock
+- MQTT Topic 必须全小写/斜杠分隔（如 `device/{id}/audio/up`），大写会导致订阅不匹配
+
+---
+
+## 10. 环境变量（开发环境）
+
+| 变量 | 用途 | 示例 |
+|------|------|------|
+| `VOLC_ASR_APPID` | 火山引擎 ASR App ID | `xxxxxx` |
+| `VOLC_ASR_TOKEN` | 火山引擎 ASR Token | `xxxxxx` |
+| `VOLC_TTS_APPID` | 火山引擎 TTS App ID | `xxxxxx` |
+| `VOLC_TTS_TOKEN` | 火山引擎 TTS Token | `xxxxxx` |
+| `MQTT_BROKER_HOST` | MQTT Broker 地址 | `localhost` |
+| `MQTT_BROKER_PORT` | MQTT Broker 端口 | `1883` |
+
+> 密钥也可放在 `config.json`（权限 0600），详见 `SECURITY.md`。
 
 ---
 
