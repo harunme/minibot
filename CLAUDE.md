@@ -1,17 +1,54 @@
 # CLAUDE.md — AI 辅助开发约束文档
 
 > **适用范围**：本项目（MiniBot / nanobot-ai）所有 AI 辅助开发  
-> **最后更新**：2026-03-27
+> **最后更新**：2026-03-27  
+> **优先级**：本文件中的规则优先于 `docs/` 下任何文档。如有冲突，以本文件为准。
+
+<!-- 
+维护者注意：
+- 根 CLAUDE.md 目标行数 ≤ 150 行，超出请考虑外移到 docs/ 或 .claude/rules/
+- 下方的禁止修改列表需要随框架版本更新，当前 nanobot 版本为 0.1.4.post5
+- 路径特定规则已拆分到 .claude/rules/ 目录，见 channel-development.md 和 core-protection.md
+-->
 
 ## 0. 上下文引用
 
-@docs/ROADMAP.md
-
-> 设计文档和决策记录通过 `docs/CLAUDE.md` 和 `docs/design/CLAUDE.md` 按需加载，不在此全量引用。
+- 版本路线图详见 `docs/ROADMAP.md`（V1-V4 范围和里程碑）
+- 技术决策详见 `docs/DECISIONS.md`
+- 详细设计按版本拆分在 `docs/design/` 下（开发具体模块时再读对应章节）
 
 ---
 
-## 1. 项目身份
+## 1. 常用命令
+
+```bash
+# 安装（开发模式）
+pip install -e ".[dev]"
+
+# 运行测试
+pytest tests/
+pytest --cov=nanobot tests/
+
+# 代码检查
+ruff check nanobot/ tests/
+
+# 启动网关
+nanobot gateway
+
+# 启动管理后台（V1）
+cd admin/backend && uvicorn main:app --port 8080
+
+# 启动 MQTT Broker（开发环境）
+brew install mosquitto && mosquitto -c deploy/mosquitto/mosquitto.conf
+# 或 Docker：docker run -d --name mosquitto -p 1883:1883 eclipse-mosquitto:2
+
+# 模拟硬件测试客户端
+python tools/hardware_test_client.py --device dev001 --token xxx --broker localhost
+```
+
+---
+
+## 2. 项目身份
 
 | 字段 | 值 |
 |------|------|
@@ -25,17 +62,17 @@
 
 ---
 
-## 2. 核心原则 — ⚠️ 不可违反
+## 3. 核心原则 — ⚠️ 不可违反
 
-### 2.1 扩展不改核心
+### 3.1 扩展不改核心
 
 **绝对不允许修改 nanobot 框架核心文件。** 所有功能通过扩展点接入。
 
-禁止修改的范围：`nanobot/agent/`、`nanobot/bus/`、`nanobot/channels/base.py`、`nanobot/channels/manager.py`、`nanobot/channels/registry.py`、`nanobot/providers/base.py`、`nanobot/providers/registry.py`、`nanobot/session/`、`nanobot/cli/`、`nanobot/command/`、`nanobot/cron/`、`nanobot/heartbeat/`、`nanobot/utils/`、`nanobot/templates/`、`nanobot/skills/**/SKILL.md`。
+> 详细的路径保护规则见 `.claude/rules/core-protection.md`（自动生效）。
 
 `nanobot/config/schema.py` **仅允许追加字段/新类，不允许修改已有字段**。
 
-### 2.2 允许的扩展方式
+### 3.2 允许的扩展方式
 
 | 扩展方式 | 说明 |
 |----------|------|
@@ -48,7 +85,7 @@
 
 ---
 
-## 3. 代码规范
+## 4. 代码规范
 
 - **类型标注**：所有公开接口必须有类型标注，使用 `from __future__ import annotations`
 - **异步**：所有 I/O 使用 `async/await`，禁止阻塞调用（`time.sleep`、同步 HTTP）
@@ -62,7 +99,7 @@
 
 ---
 
-## 4. V1 开发范围
+## 5. V1 开发范围
 
 **里程碑**：M1 设计评审 → M2 MQTT通道 → M3 ASR/TTS → M4 对话链路 → M5 多租户 → M6 管理后台 → M7 集成验收
 
@@ -74,7 +111,7 @@
 
 ---
 
-## 5. 测试约束
+## 6. 测试约束
 
 - 每个新模块必须有对应测试文件，放 `tests/` 对应子目录
 - 使用 pytest + pytest-asyncio，Mock 所有外部依赖
@@ -82,7 +119,7 @@
 
 ---
 
-## 6. Git 与协作
+## 7. Git 与协作
 
 - 当前分支：`develop`，不直接推送 `main` 或 `nightly`
 - 提交格式：`<type>(<scope>): <description>`（type: feat/fix/docs/refactor/test/chore）
@@ -90,7 +127,7 @@
 
 ---
 
-## 7. AI 行为约束
+## 8. AI 行为约束
 
 ### 开发前
 
