@@ -96,6 +96,52 @@ class HeartbeatConfig(Base):
     keep_recent_messages: int = 8
 
 
+class VolcengineASRConfig(Base):
+    """火山引擎 ASR 配置（V1 ASRProvider 使用）"""
+
+    app_id: str = ""
+    token: str = ""
+    cluster: str = "volcengine_streaming_common"
+    language: str = "zh-CN"
+
+
+class VolcengineTTSConfig(Base):
+    """火山引擎 TTS 配置（V1 TTSProvider 使用）"""
+
+    app_id: str = ""
+    token: str = ""
+    cluster: str = "volcano_tts"
+    default_voice: str = "zh_female_cancan_mars_bigtts"
+
+
+class ASRConfig(Base):
+    """ASR 语音识别配置"""
+
+    provider: str = "volcengine"
+    volcengine: VolcengineASRConfig = Field(default_factory=VolcengineASRConfig)
+
+
+class TTSConfig(Base):
+    """TTS 语音合成配置"""
+
+    provider: str = "volcengine"
+    volcengine: VolcengineTTSConfig = Field(default_factory=VolcengineTTSConfig)
+
+
+class HardwareChannelConfig(Base):
+    """硬件 MQTT Channel 配置"""
+
+    enabled: bool = False
+    mqtt_host: str = "localhost"
+    mqtt_port: int = 1883
+    mqtt_username: str = ""
+    mqtt_password: str = ""
+    mqtt_tls: bool = False
+    audio_format: str = "opus"
+    max_devices: int = 100
+    allow_from: list[str] = ["*"]
+
+
 class GatewayConfig(Base):
     """Gateway/server configuration."""
 
@@ -158,6 +204,9 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    asr: ASRConfig = Field(default_factory=ASRConfig)
+    tts: TTSConfig = Field(default_factory=TTSConfig)
+    hardware: HardwareChannelConfig = Field(default_factory=HardwareChannelConfig)
 
     @property
     def workspace_path(self) -> Path:

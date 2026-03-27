@@ -25,8 +25,8 @@
 | 里程碑 | 状态 | 说明 |
 |--------|------|------|
 | M1 - 设计评审 | ✅ 完成 | V1_DESIGN.md 已评审通过 |
-| M2 - MQTT 通道 | 📐 设计完成待编码 | 硬件 MQTT Channel + Broker 部署 + 测试客户端 |
-| M3 - ASR/TTS | ⏳ 未开始 | 火山引擎 WebSocket 客户端 |
+| M2 - MQTT 通道 | ✅ 完成 | Hardware MQTT Channel + Broker 部署 + 测试客户端 |
+| M3 - ASR/TTS | ✅ 完成 | 火山引擎 WebSocket 客户端（ASRProvider + TTSProvider） |
 | M4 - 对话链路 | ⏳ 未开始 | 全链路打通（单租户） |
 
 ---
