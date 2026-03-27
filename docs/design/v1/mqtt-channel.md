@@ -106,20 +106,34 @@ class HardwareChannel(BaseChannel):
     name = "hardware"
     
     async def start(self):
-        """启动 MQTT 客户端，订阅所有设备 Topic"""
-        self.mqtt_client = aiomqtt.Client(
+        """启动 MQTT 客户端，订阅所有设备 Topic
+        
+        注意：aiomqtt 通过 async with (context manager) 管理连接生命周期，
+        不支持直接调用 disconnect()。使用 _running 标志控制退出。
+        """
+        self._running = True
+        self._stop_event = asyncio.Event()
+        
+        async with aiomqtt.Client(
             hostname=self._mqtt_host,
             port=self._mqtt_port,
             username=self._mqtt_username,
             password=self._mqtt_password,
-        )
-        async with self.mqtt_client:
-            await self.mqtt_client.subscribe("device/+/audio/up", qos=0)
-            await self.mqtt_client.subscribe("device/+/ctrl/up", qos=1)
-            await self.mqtt_client.subscribe("device/+/status", qos=1)
+        ) as client:
+            self._mqtt_client = client
+            await client.subscribe("device/+/audio/up", qos=0)
+            await client.subscribe("device/+/ctrl/up", qos=1)
+            await client.subscribe("device/+/status", qos=1)
             
-            async for message in self.mqtt_client.messages:
+            async for message in client.messages:
+                if not self._running:
+                    break
                 await self._dispatch_message(message)
+    
+    async def stop(self):
+        """停止 MQTT Channel — 设置标志使消息循环退出，context manager 自动断开连接"""
+        self._running = False
+        self._stop_event.set()
     
     async def _dispatch_message(self, message):
         """分发 MQTT 消息"""
@@ -127,9 +141,9 @@ class HardwareChannel(BaseChannel):
         device_id = topic_parts[1]
         category = topic_parts[2]
         
-        tenant = self.tenant_manager.get_by_device(device_id)  # V1: 简单验证; V3.5: 多租户
-        if not tenant:
-            await self._publish_error(device_id, "auth_failed", "设备未绑定")
+        # 使用 BaseChannel.is_allowed() 进行设备白名单验证
+        if not self.is_allowed(device_id):
+            await self._publish_error(device_id, "auth_failed", "设备未授权")
             return
         
         if category == "ctrl":

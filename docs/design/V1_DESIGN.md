@@ -12,14 +12,11 @@
 2. [系统架构](#2-系统架构)
 3. [硬件 MQTT Channel](#3-硬件-mqtt-channel)
 4. [ASR/TTS WebSocket 客户端](#4-asrtts-websocket-客户端)
-5. [多租户模块](#5-多租户模块)
-6. [管理后台](#6-管理后台)
-7. [Kids-Chat Skill](#7-kids-chat-skill)
-8. [配置设计](#8-配置设计)
-9. [目录结构](#9-目录结构)
-10. [部署方案](#10-部署方案)
-11. [测试计划](#11-测试计划)
-12. [开放问题](#12-开放问题)
+5. [配置设计](#5-配置设计)
+6. [目录结构](#6-目录结构)
+7. [部署方案](#7-部署方案)
+8. [测试计划](#8-测试计划)
+9. [开放问题](#9-开放问题)
 
 ---
 
@@ -33,7 +30,6 @@
 
 ```
 作为小朋友，我对着设备说"给我讲个故事"，设备用温柔的声音给我讲故事。
-作为家长，我在后台注册账号，绑定设备，让孩子可以开始使用。
 ```
 
 ### 1.3 V1 范围
@@ -46,12 +42,10 @@
 - MQTT Broker 部署（Mosquitto）
 - 测试客户端（模拟硬件）
 
-**已推迟（详见 DECISIONS.md）**：
-- 基础多租户（SQLite 多数据库）→ V3.5
-- 管理后台 MVP（注册/登录/设备绑定）→ V3.5
-- Kids-Chat Skill → V2.0
-
-**不包含**：
+**不包含（详见 ROADMAP.md / DECISIONS.md）**：
+- 基础多租户（V3.5）
+- 管理后台 MVP（V3.5）
+- Kids-Chat Skill（V2.0）
 - RAG 知识库（V2）
 - 硬件固件（V3）
 - 音色克隆（V4）
@@ -64,63 +58,55 @@
 ### 2.1 整体架构
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           客户端层                                           │
-├──────────────┬──────────────────┬────────────────────────────────────────────┤
-│  ESP32 硬件   │  测试客户端        │  管理后台 (React)                          │
-│  (MQTT)      │  (MQTT)           │  (HTTP)                                   │
-└──────┬───────┴────────┬──────────┴──────────┬────────────────────────────────┘
-       │                │                     │
-       │  MQTT          │  MQTT               │  HTTP
-       ▼                ▼                     ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         MQTT Broker (EMQX / Mosquitto)                       │
-│  Topic: device/{id}/audio/up, device/{id}/audio/down, device/{id}/ctrl ...   │
-└──────────────────────────────────┬───────────────────────────────────────────┘
-                                   │
-                                   ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         MiniBot 服务端                                        │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │              硬件 MQTT Channel                                         │  │
-│  │  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐              │  │
-│  │  │ MQTT 订阅     │   │ 设备认证      │   │ MQTT 发布     │              │  │
-│  │  │ (音频/状态上行)│   │ (Token 验证) │   │ (音频/指令下行)│              │  │
-│  │  └──────┬───────┘   └──────────────┘   └──────▲───────┘              │  │
-│  │         │                                      │                      │  │
-│  │         ▼                                      │                      │  │
-│  │  ┌──────────────┐                       ┌──────────────┐              │  │
-│  │  │ ASR 客户端    │                       │ TTS 客户端    │              │  │
-│  │  │ (WebSocket)  │                       │ (WebSocket)  │              │  │
-│  │  └──────┬───────┘                       └──────▲───────┘              │  │
-│  └─────────┼──────────────────────────────────────┼──────────────────────┘  │
-│            │                                      │                         │
-│            │  WebSocket                           │  WebSocket              │
-│            ▼                                      │                         │
-│  ┌─────────────────────────────┐   ┌──────────────┴────────────────────┐    │
-│  │ 火山引擎 ASR (Streaming)    │   │ 火山引擎 TTS (Streaming)          │    │
-│  │ 音频流 → 文本               │   │ 文本 → 音频流                     │    │
-│  └─────────────────────────────┘   └───────────────────────────────────┘    │
-│                                                                              │
-│  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │                   nanobot 核心 (复用)                                    │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐              │  │
-│  │  │消息总线   │  │Agent Loop│  │Context   │  │记忆系统   │              │  │
-│  │  │(Bus)     │  │(Loop)    │  │Builder   │  │(Memory)  │              │  │
-│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘              │  │
-│  └────────────────────────────────────────────────────────────────────────┘  │
-│                                                                              │
-│  ┌───────────────────────┐  ┌──────────────────────────────────┐            │
-│  │    多租户层             │  │    管理后台 API (FastAPI)        │            │
-│  │  ┌────────┐ ┌────────┐│  │  ┌──────┐ ┌──────┐ ┌──────────┐│            │
-│  │  │租户路由 │ │SQLite  ││  │  │认证   │ │设备   │ │内容(V2) ││            │
-│  │  │        │ │多数据库 ││  │  │(JWT) │ │管理   │ │管理     ││            │
-│  │  └────────┘ └────────┘│  │  └──────┘ └──────┘ └──────────┘│            │
-│  └───────────────────────┘  └──────────────────────────────────┘            │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│                     客户端层                           │
+├──────────────────┬───────────────────────────────────┤
+│  ESP32 硬件       │  测试客户端                        │
+│  (MQTT)          │  (MQTT)                           │
+└──────┬───────────┴────────┬──────────────────────────┘
+       │                    │
+       │  MQTT              │  MQTT
+       ▼                    ▼
+┌──────────────────────────────────────────────────────┐
+│           MQTT Broker (Mosquitto / EMQX)              │
+│  Topic: device/{id}/audio/up|down, ctrl/up|down ...   │
+└──────────────────────┬───────────────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────────────┐
+│                   MiniBot 服务端                       │
+├──────────────────────────────────────────────────────┤
+│                                                       │
+│  ┌─────────────────────────────────────────────────┐  │
+│  │          硬件 MQTT Channel                       │  │
+│  │  ┌────────────┐  ┌────────────┐  ┌────────────┐ │  │
+│  │  │ MQTT 订阅   │  │ 设备白名单  │  │ MQTT 发布   │ │  │
+│  │  │(音频/状态)  │  │ (allow_from)│  │(音频/指令)  │ │  │
+│  │  └─────┬──────┘  └────────────┘  └─────▲──────┘ │  │
+│  │        │                               │        │  │
+│  │        ▼                               │        │  │
+│  │  ┌────────────┐                 ┌────────────┐  │  │
+│  │  │ ASR 客户端  │                 │ TTS 客户端  │  │  │
+│  │  │(WebSocket) │                 │(WebSocket) │  │  │
+│  │  └─────┬──────┘                 └─────▲──────┘  │  │
+│  └────────┼──────────────────────────────┼─────────┘  │
+│           │                              │            │
+│           │  WebSocket                   │  WebSocket  │
+│           ▼                              │            │
+│  ┌────────────────────┐  ┌──────────────┴──────────┐  │
+│  │火山引擎 ASR         │  │火山引擎 TTS              │  │
+│  │音频流 → 文本        │  │文本 → 音频流             │  │
+│  └────────────────────┘  └─────────────────────────┘  │
+│                                                       │
+│  ┌─────────────────────────────────────────────────┐  │
+│  │             nanobot 核心 (复用)                    │  │
+│  │  ┌────────┐ ┌──────────┐ ┌────────┐ ┌────────┐ │  │
+│  │  │消息总线 │ │Agent Loop│ │Context │ │记忆系统 │ │  │
+│  │  │(Bus)   │ │(Loop)    │ │Builder │ │(Memory)│ │  │
+│  │  └────────┘ └──────────┘ └────────┘ └────────┘ │  │
+│  └─────────────────────────────────────────────────┘  │
+│                                                       │
+└──────────────────────────────────────────────────────┘
 ```
 
 ### 2.2 数据流
@@ -163,9 +149,6 @@
 | MQTT 客户端 | `asyncio-mqtt` / `paho-mqtt` | Channel 内部实现，订阅/发布设备 Topic |
 | ASR WebSocket | `websockets` 客户端 | Channel 内部实现，流式调用火山引擎 ASR |
 | TTS | 独立 Provider 模块 + WebSocket | 新增 `providers/tts.py`，内部通过 WebSocket 调用火山引擎 TTS |
-| 多租户 | 独立模块 | 新增 `tenant/` 包，Channel 和 Admin 调用 |
-| 管理后台 | 独立 FastAPI 服务 | 与 nanobot gateway 并行运行 |
-| Kids Skill | SKILL.md 文件 | 放入 workspace/skills/ 目录 |
 
 ---
 
@@ -341,21 +324,39 @@ class HardwareChannel(BaseChannel):
     name = "hardware"
     
     async def start(self):
-        """启动 MQTT 客户端，订阅所有设备 Topic"""
-        self.mqtt_client = aiomqtt.Client(
+        """启动 MQTT 客户端，订阅所有设备 Topic
+        
+        注意：aiomqtt 通过 async with (context manager) 管理连接生命周期，
+        不支持直接调用 disconnect()。使用 _running 标志 + asyncio.Event 控制退出。
+        """
+        self._running = True
+        self._stop_event = asyncio.Event()
+        
+        async with aiomqtt.Client(
             hostname=self._mqtt_host,
             port=self._mqtt_port,
             username=self._mqtt_username,
             password=self._mqtt_password,
-        )
-        async with self.mqtt_client:
+        ) as client:
+            self._mqtt_client = client
             # 订阅所有设备的上行 Topic
-            await self.mqtt_client.subscribe("device/+/audio/up", qos=0)
-            await self.mqtt_client.subscribe("device/+/ctrl/up", qos=1)
-            await self.mqtt_client.subscribe("device/+/status", qos=1)
+            await client.subscribe("device/+/audio/up", qos=0)
+            await client.subscribe("device/+/ctrl/up", qos=1)
+            await client.subscribe("device/+/status", qos=1)
             
-            async for message in self.mqtt_client.messages:
+            async for message in client.messages:
+                if not self._running:
+                    break
                 await self._dispatch_message(message)
+    
+    async def stop(self):
+        """停止 MQTT Channel
+        
+        通过设置 _running = False 使消息循环退出，
+        aiomqtt 的 context manager 会自动完成断开连接和资源清理。
+        """
+        self._running = False
+        self._stop_event.set()
     
     async def _dispatch_message(self, message):
         """分发 MQTT 消息"""
@@ -364,10 +365,9 @@ class HardwareChannel(BaseChannel):
         device_id = topic_parts[1]
         category = topic_parts[2]
         
-        # 验证设备
-        tenant = self.tenant_manager.get_by_device(device_id)
-        if not tenant:
-            await self._publish_error(device_id, "auth_failed", "设备未绑定")
+        # 使用 BaseChannel.is_allowed() 进行设备白名单验证
+        if not self.is_allowed(device_id):
+            await self._publish_error(device_id, "auth_failed", "设备未授权")
             return
         
         if category == "ctrl":
@@ -463,16 +463,28 @@ class HardwareChannel(BaseChannel):
         self._audio_buffers: dict[str, bytearray] = {}
         self._asr_client = None   # 火山引擎 ASR WebSocket 客户端
         self._tts_client = None   # 火山引擎 TTS WebSocket 客户端
-        self._tenant_manager = None
+        self._mqtt_client = None  # aiomqtt.Client（在 start() 的 context manager 内赋值）
+        self._stop_event = asyncio.Event()
     
     async def start(self) -> None:
-        """启动 MQTT 客户端，订阅设备 Topic"""
+        """启动 MQTT 客户端，订阅设备 Topic
+        
+        注意：aiomqtt 使用 async with 管理连接生命周期，
+        stop() 通过 _running 标志使消息循环退出，context manager 自动断开连接。
+        """
         # ... 见上方伪代码
     
     async def stop(self) -> None:
-        """断开 MQTT 连接"""
-        if self.mqtt_client:
-            await self.mqtt_client.disconnect()
+        """停止 MQTT Channel
+        
+        设置 _running = False 使消息循环退出，
+        aiomqtt 的 async with context manager 会自动完成：
+        - 发送 DISCONNECT 包
+        - 关闭底层 TCP 连接
+        - 清理所有订阅
+        """
+        self._running = False
+        self._stop_event.set()
     
     async def send(self, msg: OutboundMessage) -> None:
         """Agent 回复 → TTS → MQTT 音频推送"""
@@ -486,7 +498,10 @@ class HardwareChannel(BaseChannel):
             "mqtt_port": 1883,
             "mqtt_username": "",
             "mqtt_password": "",
+            "mqtt_tls": False,
             "audio_format": "opus",
+            "max_devices": 100,
+            "allow_from": ["*"],  # "*" 允许所有设备; 生产环境应改为具体设备 ID 列表
         }
 ```
 
@@ -532,7 +547,7 @@ class ASRProvider(ABC):
         ...
     
     @abstractmethod
-    async def recognize_stream(
+    def recognize_stream(
         self,
         audio_stream: AsyncIterator[bytes],
         *,
@@ -540,6 +555,10 @@ class ASRProvider(ABC):
         sample_rate: int = 16000,
     ) -> AsyncIterator[str]:
         """流式识别：边发送音频边获取中间结果
+        
+        注意：此方法应实现为 async generator（使用 async def + yield），
+        但抽象基类中不能使用 yield（否则会把方法变成 generator 而非抽象签名）。
+        因此这里声明为普通方法返回 AsyncIterator[str]，子类实现时使用 async def + yield。
         
         Args:
             audio_stream: 音频数据流
@@ -630,7 +649,7 @@ class TTSProvider(ABC):
     """TTS 语音合成提供者抽象基类"""
     
     @abstractmethod
-    async def synthesize(
+    def synthesize(
         self,
         text: str,
         voice_id: str = "default",
@@ -639,6 +658,9 @@ class TTSProvider(ABC):
         sample_rate: int = 24000,
     ) -> AsyncIterator[bytes]:
         """将文本转为语音音频流（流式输出）
+        
+        注意：此方法应实现为 async generator（使用 async def + yield），
+        但抽象基类中不能使用 yield。子类实现时使用 async def + yield。
         
         Args:
             text: 待合成文本
@@ -743,269 +765,9 @@ class VolcengineTTSProvider(TTSProvider):
 
 ---
 
-## 5. 多租户模块（⏳ 已推迟到 V3.5）
+## 5. 配置设计
 
-> ⚠️ 本节内容已推迟到 V3.5 版本实现，保留供未来参考。详见 `DECISIONS.md` DEC-004。
-> 拆分文档已移至 `docs/design/v3.5/tenant.md`。
-
-### 5.1 数据模型
-
-#### 主库 (master.db)
-
-全局共享，存储租户索引和设备映射。
-
-```sql
--- 家庭（租户）表
-CREATE TABLE families (
-    id          TEXT PRIMARY KEY,      -- UUID
-    name        TEXT NOT NULL,         -- 家庭名称
-    created_at  TEXT NOT NULL,         -- ISO 8601
-    updated_at  TEXT NOT NULL,
-    status      TEXT DEFAULT 'active'  -- active | suspended
-);
-
--- 设备表
-CREATE TABLE devices (
-    id          TEXT PRIMARY KEY,      -- 设备唯一ID（硬件烧录）
-    family_id   TEXT NOT NULL,         -- 所属家庭
-    name        TEXT,                  -- 设备昵称
-    auth_token  TEXT NOT NULL,         -- 设备认证 token
-    status      TEXT DEFAULT 'active', -- active | disabled
-    last_seen   TEXT,                  -- 最后在线时间
-    created_at  TEXT NOT NULL,
-    FOREIGN KEY (family_id) REFERENCES families(id)
-);
-
--- 设备ID → 家庭ID 快速查询索引
-CREATE INDEX idx_devices_family ON devices(family_id);
-```
-
-#### 租户库 ({family_id}.db)
-
-每个家庭独立数据库文件。
-
-```sql
--- 家庭成员表
-CREATE TABLE members (
-    id          TEXT PRIMARY KEY,      -- UUID
-    name        TEXT NOT NULL,         -- 成员名称
-    role        TEXT NOT NULL,         -- parent | child
-    phone       TEXT,                  -- 手机号（家长）
-    password    TEXT,                  -- 密码哈希（家长登录用）
-    avatar      TEXT,                  -- 头像路径
-    created_at  TEXT NOT NULL
-);
-
--- 内容元数据表
-CREATE TABLE contents (
-    id          TEXT PRIMARY KEY,      -- UUID
-    type        TEXT NOT NULL,         -- story | music | document
-    title       TEXT NOT NULL,
-    file_path   TEXT NOT NULL,         -- 相对于租户存储目录的路径
-    file_size   INTEGER,
-    mime_type   TEXT,
-    duration    INTEGER,              -- 音频时长（秒）
-    metadata    TEXT,                  -- JSON 扩展字段
-    uploaded_by TEXT,                  -- 上传者 member_id
-    created_at  TEXT NOT NULL
-);
-
--- 设备配置表
-CREATE TABLE device_configs (
-    device_id   TEXT PRIMARY KEY,
-    voice_id    TEXT DEFAULT 'zh_female_cancan_mars_bigtts',  -- 默认音色（火山引擎）
-    volume      INTEGER DEFAULT 70,           -- 音量 0-100
-    wake_word   TEXT DEFAULT '你好小伙伴',     -- 唤醒词
-    config      TEXT,                          -- JSON 扩展配置
-    updated_at  TEXT NOT NULL
-);
-```
-
-### 5.2 租户路由
-
-```python
-class TenantManager:
-    """多租户管理器"""
-    
-    def __init__(self, data_dir: Path):
-        self.data_dir = data_dir
-        self.master_db = data_dir / "master.db"
-        self._tenant_dbs: dict[str, sqlite3.Connection] = {}
-    
-    def get_family_by_device(self, device_id: str) -> Family | None:
-        """设备 ID → 家庭（核心路由方法）"""
-        ...
-    
-    def get_tenant_db(self, family_id: str) -> sqlite3.Connection:
-        """获取租户数据库连接（带缓存）"""
-        ...
-    
-    def create_family(self, name: str) -> Family:
-        """创建新家庭（自动初始化租户库 + 文件目录 + workspace）"""
-        ...
-    
-    def bind_device(self, device_id: str, family_id: str) -> Device:
-        """绑定设备到家庭"""
-        ...
-    
-    def unbind_device(self, device_id: str) -> None:
-        """解绑设备"""
-        ...
-```
-
-### 5.3 文件存储结构
-
-```
-{data_dir}/
-├── master.db                    # 主库
-├── families/
-│   ├── {family_id_1}/
-│   │   ├── tenant.db            # 租户库
-│   │   ├── workspace/           # nanobot workspace（会话、记忆）
-│   │   │   ├── sessions/
-│   │   │   ├── memory/
-│   │   │   └── skills/
-│   │   ├── content/             # 上传内容
-│   │   │   ├── stories/         # 故事音频
-│   │   │   ├── music/           # 音乐
-│   │   │   └── documents/       # PDF/文本
-│   │   └── voices/              # 音色数据（V3）
-│   └── {family_id_2}/
-│       └── ...
-```
-
----
-
-## 6. 管理后台（⏳ 已推迟到 V3.5）
-
-> ⚠️ 本节内容已推迟到 V3.5 版本实现，保留供未来参考。详见 `DECISIONS.md` DEC-004。
-> 拆分文档已移至 `docs/design/v3.5/admin.md`。
-
-### 6.1 后端 API (FastAPI)
-
-#### 认证 API
-
-```
-POST /api/auth/register
-  Body: { "phone": "138xxx", "password": "xxx", "familyName": "张家" }
-  Response: { "token": "jwt...", "familyId": "uuid", "memberId": "uuid" }
-
-POST /api/auth/login
-  Body: { "phone": "138xxx", "password": "xxx" }
-  Response: { "token": "jwt...", "familyId": "uuid" }
-
-POST /api/auth/refresh
-  Headers: Authorization: Bearer {token}
-  Response: { "token": "new_jwt..." }
-```
-
-#### 设备管理 API
-
-```
-GET /api/devices
-  Headers: Authorization: Bearer {token}
-  Response: { "devices": [{ "id": "dev001", "name": "客厅设备", "status": "active", "lastSeen": "..." }] }
-
-POST /api/devices/bind
-  Body: { "deviceId": "dev001", "name": "客厅设备" }
-  Response: { "device": { "id": "dev001", "authToken": "xxx" } }
-
-DELETE /api/devices/{deviceId}
-  Response: { "ok": true }
-
-GET /api/devices/{deviceId}/config
-  Response: { "voiceId": "longxiaochun", "volume": 70, "wakeWord": "你好小伙伴" }
-
-PUT /api/devices/{deviceId}/config
-  Body: { "voiceId": "longhua", "volume": 80 }
-  Response: { "ok": true }
-```
-
-#### 家庭成员 API
-
-```
-GET /api/members
-  Response: { "members": [{ "id": "...", "name": "小明", "role": "child" }] }
-
-POST /api/members
-  Body: { "name": "小明", "role": "child" }
-  Response: { "member": { "id": "uuid", ... } }
-```
-
-### 6.2 前端 (React)
-
-V1 MVP 页面：
-
-| 页面 | 路由 | 功能 |
-|------|------|------|
-| 登录 | `/login` | 手机号 + 密码登录 |
-| 注册 | `/register` | 创建家庭账号 |
-| 首页/设备列表 | `/` | 显示已绑定设备列表和在线状态 |
-| 绑定设备 | `/devices/bind` | 输入设备 ID 绑定 |
-| 设备配置 | `/devices/:id` | 修改音色、音量、唤醒词 |
-
-### 6.3 管理后台部署
-
-管理后台作为独立 FastAPI 服务运行，与 nanobot gateway 共享数据目录：
-
-```bash
-# 启动 nanobot gateway（端口 18790）
-nanobot gateway
-
-# 启动管理后台（端口 8080）
-cd admin/backend
-uvicorn main:app --port 8080
-```
-
----
-
-## 7. Kids-Chat Skill（⏳ 已推迟到 V2.0）
-
-> ⚠️ 本节内容已推迟到 V2.0 版本实现，保留供未来参考。详见 `DECISIONS.md` DEC-003。
-> 拆分文档已移至 `docs/design/v2/kids-chat.md`。
-
-### 7.1 SKILL.md 定义
-
-放置于 workspace `skills/kids-chat/SKILL.md`，Agent 启动时自动加载。
-
-```markdown
----
-description: "儿童友好对话技能，提供温暖安全的聊天体验"
-always: true
-metadata: '{"nanobot": {"always": true}}'
----
-
-# Kids-Chat Skill
-
-你正在和一个小朋友聊天。请遵循以下规则：
-
-## 对话风格
-- 使用简单、温暖、有趣的语言
-- 语气亲切友好，像一个耐心的大朋友
-- 回复简短（通常不超过 3 句话），适合语音播放
-- 适当使用拟声词和语气词增加趣味性
-
-## 安全规则
-- 绝不讨论暴力、恐怖、成人内容
-- 遇到不适当问题时温和引导到其他话题
-- 不透露任何个人隐私信息
-- 不鼓励危险行为
-
-## 内容偏好
-- 优先使用知识库中的故事和内容（当知识库可用时）
-- 鼓励好奇心和学习探索
-- 适当融入简单的知识科普
-- 支持讲故事、唱儿歌、猜谜语、做游戏
-
-## 播放指令（V2）
-当小朋友要求播放故事或音乐时，使用 knowledge_search 工具查找内容。
-```
-
----
-
-## 8. 配置设计
-
-### 8.1 config.json 扩展
+### 5.1 config.json 扩展
 
 ```jsonc
 {
@@ -1021,7 +783,8 @@ metadata: '{"nanobot": {"always": true}}'
       "mqtt_password": "xxx",            // MQTT 连接密码
       "mqtt_tls": false,                 // 是否启用 TLS（生产环境建议 true）
       "audio_format": "opus",            // 默认音频格式
-      "max_devices": 100                 // 最大同时在线设备数
+      "max_devices": 100,                // 最大同时在线设备数
+      "allow_from": ["*"]               // 设备白名单（"*" 允许所有设备; 生产环境改为具体设备 ID）
     }
   },
   
@@ -1043,24 +806,11 @@ metadata: '{"nanobot": {"always": true}}'
       "cluster": "volcano_tts",
       "defaultVoice": "zh_female_cancan_mars_bigtts"
     }
-  },
-  
-  "tenant": {
-    "dataDir": "~/.minibot/data",  // 多租户数据根目录
-    "maxFamilies": 1000,           // 最大家庭数
-    "maxDevicesPerFamily": 10      // 每家庭最大设备数
-  },
-  
-  "admin": {
-    "enabled": true,
-    "port": 8080,
-    "jwtSecret": "change-me-in-production",
-    "jwtExpireHours": 24
   }
 }
 ```
 
-### 8.2 Pydantic Schema 扩展
+### 5.2 Pydantic Schema 扩展
 
 在 `nanobot/config/schema.py` 中新增：
 
@@ -1074,32 +824,20 @@ class HardwareChannelConfig(Base):
     mqtt_tls: bool = False
     audio_format: str = "opus"
     max_devices: int = 100
+    allow_from: list[str] = ["*"]  # 设备白名单; "*" 允许所有; 生产环境改为具体设备 ID
 
 class ASRConfig(Base):
     provider: str = "volcengine"
     volcengine: VolcengineASRConfig = Field(default_factory=VolcengineASRConfig)
-    # 抽象层预留扩展，未来可追加阿里等厂商配置
 
 class TTSConfig(Base):
     provider: str = "volcengine"
     volcengine: VolcengineTTSConfig = Field(default_factory=VolcengineTTSConfig)
-    # 抽象层预留扩展，未来可追加其他厂商配置
-
-class TenantConfig(Base):
-    data_dir: str = "~/.minibot/data"
-    max_families: int = 1000
-    max_devices_per_family: int = 10
-
-class AdminConfig(Base):
-    enabled: bool = False
-    port: int = 8080
-    jwt_secret: str = "change-me"
-    jwt_expire_hours: int = 24
 ```
 
 ---
 
-## 9. 目录结构
+## 6. 目录结构
 
 ```
 project-root/
@@ -1116,26 +854,11 @@ project-root/
 │   │   ├── hardware.py            # [NEW] 硬件 MQTT Channel
 │   │   └── ... (现有渠道)
 │   ├── providers/
-│   │   ├── asr.py                 # [NEW] ASR Provider（火山引擎 WebSocket；抽象层支持多厂商扩展）
-│   │   ├── tts.py                 # [NEW] TTS Provider（火山引擎 WebSocket；抽象层支持多厂商扩展）
+│   │   ├── asr.py                 # [NEW] ASR Provider（火山引擎 WebSocket）
+│   │   ├── tts.py                 # [NEW] TTS Provider（火山引擎 WebSocket）
 │   │   └── ... (现有 Provider)
-│   ├── tenant/                    # [NEW] 多租户模块
-│   │   ├── __init__.py
-│   │   ├── models.py              # 数据模型
-│   │   ├── manager.py             # 租户管理器
-│   │   └── storage.py             # 文件存储
 │   └── config/
 │       └── schema.py              # [MODIFY] 扩展配置
-│
-├── admin/                          # [NEW] 管理后台
-│   ├── backend/
-│   │   ├── main.py                # FastAPI 入口
-│   │   ├── auth.py                # JWT 认证
-│   │   ├── devices.py             # 设备管理
-│   │   └── requirements.txt
-│   └── frontend/
-│       ├── package.json
-│       └── src/
 │
 ├── deploy/                         # [NEW] 部署配置
 │   └── mosquitto/
@@ -1144,11 +867,9 @@ project-root/
 ├── tests/                          # 测试
 │   ├── channels/
 │   │   └── test_hardware_channel.py
-│   ├── providers/
-│   │   ├── test_asr_provider.py
-│   │   └── test_tts_provider.py
-│   └── tenant/
-│       └── test_tenant_manager.py
+│   └── providers/
+│       ├── test_asr_provider.py
+│       └── test_tts_provider.py
 │
 └── tools/                          # [NEW] 开发工具
     └── hardware_test_client.py     # MQTT 测试客户端（模拟 ESP32）
@@ -1156,20 +877,16 @@ project-root/
 
 ---
 
-## 10. 部署方案
+## 7. 部署方案
 
-### 10.1 开发环境
+### 7.1 开发环境
 
 ```bash
 # 1. 安装 nanobot（开发模式）
 cd minibot
 pip install -e ".[dev]"
 
-# 2. 安装管理后台依赖
-cd admin/backend
-pip install -r requirements.txt
-
-# 3. 启动 MQTT Broker（Mosquitto）
+# 2. 启动 MQTT Broker（Mosquitto）
 # macOS:
 brew install mosquitto
 mosquitto -c deploy/mosquitto/mosquitto.conf
@@ -1177,19 +894,18 @@ mosquitto -c deploy/mosquitto/mosquitto.conf
 # 或使用 Docker:
 docker run -d --name mosquitto -p 1883:1883 -p 9001:9001 eclipse-mosquitto:2
 
-# 4. 配置
+# 3. 配置
 cp config.example.json ~/.minibot/config.json
 # 编辑配置：填入 LLM API Key、火山引擎 ASR/TTS AppId/Token、MQTT 信息
 
-# 5. 启动
+# 4. 启动
 nanobot gateway                        # 启动 nanobot + 硬件 MQTT Channel
-cd admin/backend && uvicorn main:app   # 启动管理后台
 
-# 6. 测试
+# 5. 测试
 python tools/hardware_test_client.py   # 模拟 ESP32 通过 MQTT 发送语音
 ```
 
-### 10.2 Docker 部署
+### 7.2 Docker 部署
 
 ```yaml
 # docker-compose.yml (扩展)
@@ -1221,18 +937,6 @@ services:
       - MQTT_PORT=1883
     depends_on:
       - mosquitto
-  
-  # 管理后台
-  minibot-admin:
-    build:
-      context: ./admin/backend
-    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
-    ports:
-      - "8080:8080"
-    volumes:
-      - minibot-data:/data
-    depends_on:
-      - minibot-gateway
 
 volumes:
   minibot-data:
@@ -1240,7 +944,7 @@ volumes:
   mosquitto-log:
 ```
 
-### 10.3 Mosquitto 配置
+### 7.3 Mosquitto 配置
 
 ```conf
 # deploy/mosquitto/mosquitto.conf
@@ -1270,33 +974,20 @@ log_type all
 # keyfile /mosquitto/certs/server.key
 ```
 
-### 10.4 生产环境
+### 7.4 生产环境
 
 | 组件 | 建议配置 |
 |------|----------|
 | 服务器 | 2C4G 起步（无 GPU） |
 | MQTT Broker | EMQX（生产）或 Mosquitto（小规模），端口 1883/8883(TLS) |
-| 反向代理 | Nginx（HTTP 路由 + MQTT TCP 代理可选） |
-| SSL | Let's Encrypt（MQTT 需 TLS，管理后台需 HTTPS） |
+| SSL | Let's Encrypt（MQTT TLS） |
 | 监控 | 日志：loguru → 文件轮转；MQTT：EMQX Dashboard；指标：Prometheus (可选) |
-| 备份 | SQLite 文件 + Mosquitto 持久化数据定期备份 |
+| 备份 | Mosquitto 持久化数据定期备份 |
 
-Nginx 配置示例：
+Nginx 配置示例（可选，用于 MQTT WebSocket 代理）：
 
 ```nginx
-# API — 管理后台
-location /api/ {
-    proxy_pass http://127.0.0.1:8080;
-}
-
-# 前端 — 管理后台
-location / {
-    root /var/www/minibot-admin;
-    try_files $uri /index.html;
-}
-
-# 注意：MQTT 不走 Nginx，ESP32 直连 MQTT Broker（1883/8883 端口）
-# 如需 MQTT over WebSocket（Web 调试），可配置：
+# MQTT over WebSocket（Web 调试客户端）
 location /mqtt {
     proxy_pass http://127.0.0.1:9001;
     proxy_http_version 1.1;
@@ -1304,34 +995,34 @@ location /mqtt {
     proxy_set_header Connection "upgrade";
     proxy_read_timeout 3600s;
 }
+
+# 注意：MQTT TCP 不走 Nginx，ESP32 直连 MQTT Broker（1883/8883 端口）
 ```
 
 ---
 
-## 11. 测试计划
+## 8. 测试计划
 
-### 11.1 单元测试
+### 8.1 单元测试
 
 | 模块 | 测试文件 | 覆盖内容 |
 |------|----------|----------|
-| 硬件 Channel | `test_hardware_channel.py` | MQTT 订阅/发布、音频帧解析、设备认证、消息分发 |
+| 硬件 Channel | `test_hardware_channel.py` | MQTT 订阅/发布、音频帧解析、设备白名单验证、消息分发 |
 | ASR Provider | `test_asr_provider.py` | 火山引擎 WebSocket 连接、流式识别、错误处理、降级逻辑 |
 | TTS Provider | `test_tts_provider.py` | 火山引擎 WebSocket 合成、流式输出、错误处理、Provider 切换 |
-| 多租户 | `test_tenant_manager.py` | 家庭 CRUD、设备绑定/解绑、路由查询、数据隔离 |
 
-### 11.2 集成测试
+### 8.2 集成测试
 
 | 场景 | 步骤 | 期望结果 |
 |------|------|----------|
 | 端到端语音对话 | 测试客户端 MQTT 发语音 → 后端 ASR → Agent → TTS → MQTT 回音频 | 收到合成语音回复 |
-| 设备认证 | 未绑定设备 MQTT 连接 | 收到 auth_failed 错误 |
-| 多租户隔离 | 两设备绑定不同家庭，同时对话 | 各自独立会话、互不影响 |
+| 设备白名单验证 | 不在 allow_from 列表中的设备 MQTT 发消息 | 收到 auth_failed 错误，消息被拒绝 |
 | TTS 降级 | 模拟火山引擎 TTS 失败 | 返回友好错误提示，日志记录异常 |
 | ASR 降级 | 发送空白/噪音音频 | 返回友好错误提示 |
 | MQTT 断线重连 | 模拟网络中断后恢复 | 设备自动重连，会话恢复 |
 | 遗嘱消息 | 模拟设备异常断线 | 后端收到 LWT，设备状态更新为 offline |
 
-### 11.3 测试客户端
+### 8.3 测试客户端
 
 `tools/hardware_test_client.py` — 基于 `paho-mqtt` 的命令行工具，模拟 ESP32 设备：
 
@@ -1348,20 +1039,18 @@ python tools/hardware_test_client.py --device dev001 --status --battery 85
 
 ---
 
-## 12. 开放问题
+## 9. 开放问题
 
 | 编号 | 问题 | 状态 | 备注 |
 |------|------|------|------|
 | Q1 | 火山引擎 ASR/TTS WebSocket API 具体接入方式和定价 | 待验证 | 需注册火山引擎获取 AppId/Token 实际测试 |
 | Q2 | MQTT Broker 选型：EMQX vs Mosquitto | ✅ 已决定 | V1 用 Mosquitto 快速开发，生产切 EMQX |
-| Q3 | MQTT QoS 级别：音频数据 QoS 0（速度优先）vs QoS 1（可靠优先） | ✅ 已决定 | 音频流 QoS 0 优先低延迟，控制/状态 QoS 1 |
+| Q3 | MQTT QoS 级别：音频数据 QoS 0 vs QoS 1 | ✅ 已决定 | 音频流 QoS 0 优先低延迟，控制/状态 QoS 1 |
 | Q4 | 音频编解码库选择 | 待定 | opuslib（C 绑定）vs pyogg vs 纯 Python 方案 |
 | Q5 | MQTT payload 大小限制与音频分片策略 | 待测试 | Mosquitto 默认 max_packet_size 约 256MB，但建议单帧 ≤ 4KB |
-| Q6 | 管理后台是否需要国际化 | 待定 | V1 仅支持中文 |
-| Q7 | 设备 ID 生成方案 | 待定 | 硬件烧录 vs 首次配网时生成 |
-| Q8 | 唤醒词检测是否在端侧完成 | ✅ 已决定 | 推荐端侧，节省带宽和服务端算力 |
-| ~~Q9~~ | ~~CosyVoice2 API 作为 TTS 备选方案的优先级~~ | ✅ 已关闭 | V1 统一使用火山引擎 TTS，不再需要备选 |
-| Q10 | ASR 多提供商扩展时机 | 待定 | V1 仅实现火山引擎；抽象层已预留，未来可扩展阿里等 |
+| Q6 | 设备 ID 生成方案 | 待定 | 硬件烧录 vs 首次配网时生成 |
+| Q7 | 唤醒词检测是否在端侧完成 | ✅ 已决定 | 推荐端侧，节省带宽和服务端算力 |
+| Q8 | ASR 多提供商扩展时机 | 待定 | V1 仅实现火山引擎；抽象层已预留，未来可扩展 |
 
 ---
 

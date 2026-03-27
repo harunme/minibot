@@ -23,9 +23,13 @@ class ASRProvider(ABC):
         ...
     
     @abstractmethod
-    async def recognize_stream(self, audio_stream: AsyncIterator[bytes], *,
+    def recognize_stream(self, audio_stream: AsyncIterator[bytes], *,
                                format: str = "opus", sample_rate: int = 16000) -> AsyncIterator[str]:
-        """流式识别：边发送音频边获取中间结果"""
+        """流式识别：边发送音频边获取中间结果
+        
+        注意：子类实现时使用 async def + yield（async generator）。
+        抽象基类中不能使用 yield，因此声明为普通方法返回 AsyncIterator[str]。
+        """
         ...
 
 
@@ -50,9 +54,13 @@ class TTSProvider(ABC):
     """TTS 语音合成提供者抽象基类 — 支持多提供商扩展"""
     
     @abstractmethod
-    async def synthesize(self, text: str, voice_id: str = "default", *,
+    def synthesize(self, text: str, voice_id: str = "default", *,
                          format: str = "opus", sample_rate: int = 24000) -> AsyncIterator[bytes]:
-        """将文本转为语音音频流（流式输出）"""
+        """将文本转为语音音频流（流式输出）
+        
+        注意：子类实现时使用 async def + yield（async generator）。
+        抽象基类中不能使用 yield，因此声明为普通方法返回 AsyncIterator[bytes]。
+        """
         ...
     
     @abstractmethod

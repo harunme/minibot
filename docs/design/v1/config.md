@@ -17,7 +17,8 @@
       "mqtt_password": "xxx",
       "mqtt_tls": false,
       "audio_format": "opus",
-      "max_devices": 100
+      "max_devices": 100,
+      "allow_from": ["*"]
     }
   },
   
@@ -40,14 +41,13 @@ class HardwareChannelConfig(Base):
     mqtt_tls: bool = False
     audio_format: str = "opus"
     max_devices: int = 100
+    allow_from: list[str] = ["*"]  # 设备白名单; "*" 允许所有; 生产环境改为具体设备 ID
 
 class ASRConfig(Base):
     provider: str = "volcengine"
     volcengine: VolcengineASRConfig = Field(default_factory=VolcengineASRConfig)
-    # 抽象层预留扩展，未来可追加阿里等厂商配置
 
 class TTSConfig(Base):
     provider: str = "volcengine"
     volcengine: VolcengineTTSConfig = Field(default_factory=VolcengineTTSConfig)
-    # 抽象层预留扩展，未来可追加其他厂商配置
 ```
