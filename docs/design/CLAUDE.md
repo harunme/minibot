@@ -2,24 +2,49 @@
 
 本目录包含各版本的详细设计文档。
 
-## 当前文档
+## 目录结构
 
-- `V1_DESIGN.md` — V1.0 完整设计文档（供人工阅读，1396行）
-- `v1/` — V1 按章节拆分版本（供 AI 按需读取，每个文件 50-200 行）
+```
+design/
+├── CLAUDE.md              # 本文件（AI 路由表）
+├── V1_DESIGN.md           # V1.0 完整设计文档（供人工阅读）
+├── v1/                    # V1.0 按章节拆分（供 AI 按需读取）
+│   ├── overview-and-architecture.md
+│   ├── mqtt-channel.md
+│   ├── asr-tts.md
+│   └── config.md
+├── v2/                    # V2.0 设计文档
+│   └── kids-chat.md
+└── v3.5/                  # V3.5 设计文档
+    ├── tenant.md
+    └── admin.md
+```
 
 ## AI 使用规则
 
-**实现具体模块时，只需读取 `v1/` 下对应文件**（而非完整的 `V1_DESIGN.md`）：
+**实现具体模块时，只需读取对应版本目录下的文件**（而非完整的 `V1_DESIGN.md`）：
+
+### V1.0 — 核心对话链路
 
 | 实现模块 | 读取文件 | 对应代码 |
 |----------|---------|---------|
 | 概述与架构 | `v1/overview-and-architecture.md` | 整体理解用 |
 | 硬件 MQTT Channel | `v1/mqtt-channel.md` | `channels/hardware.py` |
 | ASR/TTS Provider | `v1/asr-tts.md` | `providers/asr.py`, `providers/tts.py` |
-| 多租户模块 | `v1/tenant.md` | `tenant/` |
-| 管理后台 | `v1/admin.md` | `admin/` |
-| Kids-Chat Skill | `v1/kids-chat.md` | `skills/kids-chat/` |
 | 配置扩展 | `v1/config.md` | `config/schema.py` |
+
+### V2.0 — 知识库与内容管理
+
+| 实现模块 | 读取文件 | 对应代码 |
+|----------|---------|---------|
+| Kids-Chat Skill | `v2/kids-chat.md` | `skills/kids-chat/` |
+
+### V3.5 — 多租户 + 管理后台
+
+| 实现模块 | 读取文件 | 对应代码 |
+|----------|---------|---------|
+| 多租户模块 | `v3.5/tenant.md` | `tenant/` |
+| 管理后台 | `v3.5/admin.md` | `admin/` |
 
 ## 人工阅读
 
@@ -27,4 +52,4 @@
 
 ## 后续版本
 
-后续版本设计文档命名：`V2_DESIGN.md`, `V3_DESIGN.md`, `V4_DESIGN.md`，并同步拆分到 `v2/`, `v3/`, `v4/`。
+后续版本设计文档命名：`V2_DESIGN.md`, `V3_DESIGN.md`/`V3.5_DESIGN.md`, `V4_DESIGN.md`，并同步拆分到对应版本目录。

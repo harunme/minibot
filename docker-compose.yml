@@ -6,7 +6,7 @@ x-common-config: &common-config
     - ~/.nanobot:/root/.nanobot
 
 services:
-  # === MQTT Broker (V1.0a M2) ===
+  # === MQTT Broker (V1.0 M2) ===
   mosquitto:
     container_name: minibot-mosquitto
     image: eclipse-mosquitto:2
@@ -46,7 +46,7 @@ services:
           cpus: '0.25'
           memory: 256M
   
-  # === 管理后台 (V1.0b M6) ===
+  # === 管理后台 (V3.5) ===
   admin-backend:
     container_name: minibot-admin
     build:

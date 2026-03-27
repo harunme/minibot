@@ -17,21 +17,15 @@
 
 ### 1.3 V1 范围
 
-**包含**：
+**包含（M1-M4）**：
 - 硬件 MQTT 双向语音通道（设备接入层）
 - 后端 WebSocket 客户端（对接火山引擎 ASR/TTS 流式 API）
 - TTS 语音合成（火山引擎 TTS WebSocket 流式）
 - STT 语音识别（火山引擎 ASR WebSocket 流式）
-- MQTT Broker 部署（EMQX / Mosquitto）
-- 基础多租户（SQLite 多数据库）
-- 管理后台 MVP（注册/登录/设备绑定）
+- MQTT Broker 部署（Mosquitto）
 - 测试客户端（模拟硬件）
 
-**不包含**：
-- RAG 知识库（V2）
-- 硬件固件（V3）
-- 音色克隆（V4）
-- 移动端 App
+> 其他版本的功能范围详见 `ROADMAP.md` 和对应版本设计目录（`v2/`、`v3.5/` 等）。
 
 ---
 
@@ -58,7 +52,7 @@
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         MiniBot 服务端                                        │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  硬件 MQTT Channel → ASR/TTS WebSocket → nanobot 核心 → 多租户 → 管理后台    │
+│  硬件 MQTT Channel → ASR/TTS WebSocket → nanobot 核心                        │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -77,6 +71,4 @@
 | MQTT 客户端 | `asyncio-mqtt` / `paho-mqtt` | Channel 内部实现，订阅/发布设备 Topic |
 | ASR WebSocket | `websockets` 客户端 | Channel 内部实现，流式调用火山引擎 ASR |
 | TTS | 独立 Provider 模块 + WebSocket | 新增 `providers/tts.py`，内部通过 WebSocket 调用火山引擎 TTS |
-| 多租户 | 独立模块 | 新增 `tenant/` 包，Channel 和 Admin 调用 |
-| 管理后台 | 独立 FastAPI 服务 | 与 nanobot gateway 并行运行 |
-| Kids Skill | SKILL.md 文件 | 放入 workspace/skills/ 目录 |
+

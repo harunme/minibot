@@ -22,20 +22,7 @@
   },
   
   "asr": { /* 见 asr-tts.md §4.4 */ },
-  "tts": { /* 见 asr-tts.md §4.4 */ },
-  
-  "tenant": {
-    "dataDir": "~/.minibot/data",
-    "maxFamilies": 1000,
-    "maxDevicesPerFamily": 10
-  },
-  
-  "admin": {
-    "enabled": true,
-    "port": 8080,
-    "jwtSecret": "change-me-in-production",
-    "jwtExpireHours": 24
-  }
+  "tts": { /* 见 asr-tts.md §4.4 */ }
 }
 ```
 
@@ -63,18 +50,4 @@ class TTSConfig(Base):
     provider: str = "volcengine"
     volcengine: VolcengineTTSConfig = Field(default_factory=VolcengineTTSConfig)
     # 抽象层预留扩展，未来可追加其他厂商配置
-
-class TenantConfig(Base):
-    data_dir: str = "~/.minibot/data"
-    max_families: int = 1000
-    max_devices_per_family: int = 10
-    db_wal_mode: bool = True  # SQLite WAL 模式，缓解并发写锁
-    # 注意：使用 aiosqlite 异步操作，禁止同步 sqlite3
-
-class AdminConfig(Base):
-    enabled: bool = False
-    port: int = 8080
-    jwt_secret: str = "change-me"
-    jwt_expire_hours: int = 24
-    jwt_algorithm: str = "HS256"  # JWT 签名算法
 ```

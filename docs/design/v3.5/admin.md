@@ -1,6 +1,9 @@
-# V1 §6 管理后台
+# V3.5 管理后台
 
-> 摘自 `V1_DESIGN.md` §6，实现 `admin/` 时参考。
+> 本文档属于 **V3.5（多租户 + 管理后台）** 版本范围。原始设计摘自 `V1_DESIGN.md` §6。
+> 详见 `DECISIONS.md` DEC-004、`ROADMAP.md` V3.5 章节。
+
+> 实现 `admin/` 时参考。
 
 ## 6.1 后端 API (FastAPI)
 

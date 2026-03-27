@@ -38,15 +38,18 @@
 
 ### 1.3 V1 范围
 
-**包含**：
+**包含（M1-M4）**：
 - 硬件 MQTT 双向语音通道（设备接入层）
 - 后端 WebSocket 客户端（对接火山引擎 ASR/TTS 流式 API）
 - TTS 语音合成（火山引擎 TTS WebSocket 流式）
 - STT 语音识别（火山引擎 ASR WebSocket 流式）
-- MQTT Broker 部署（EMQX / Mosquitto）
-- 基础多租户（SQLite 多数据库）
-- 管理后台 MVP（注册/登录/设备绑定）
+- MQTT Broker 部署（Mosquitto）
 - 测试客户端（模拟硬件）
+
+**已推迟（详见 DECISIONS.md）**：
+- 基础多租户（SQLite 多数据库）→ V3.5
+- 管理后台 MVP（注册/登录/设备绑定）→ V3.5
+- Kids-Chat Skill → V2.0
 
 **不包含**：
 - RAG 知识库（V2）
@@ -740,7 +743,10 @@ class VolcengineTTSProvider(TTSProvider):
 
 ---
 
-## 5. 多租户模块
+## 5. 多租户模块（⏳ 已推迟到 V3.5）
+
+> ⚠️ 本节内容已推迟到 V3.5 版本实现，保留供未来参考。详见 `DECISIONS.md` DEC-004。
+> 拆分文档已移至 `docs/design/v3.5/tenant.md`。
 
 ### 5.1 数据模型
 
@@ -870,7 +876,10 @@ class TenantManager:
 
 ---
 
-## 6. 管理后台
+## 6. 管理后台（⏳ 已推迟到 V3.5）
+
+> ⚠️ 本节内容已推迟到 V3.5 版本实现，保留供未来参考。详见 `DECISIONS.md` DEC-004。
+> 拆分文档已移至 `docs/design/v3.5/admin.md`。
 
 ### 6.1 后端 API (FastAPI)
 
@@ -950,7 +959,10 @@ uvicorn main:app --port 8080
 
 ---
 
-## 7. Kids-Chat Skill
+## 7. Kids-Chat Skill（⏳ 已推迟到 V2.0）
+
+> ⚠️ 本节内容已推迟到 V2.0 版本实现，保留供未来参考。详见 `DECISIONS.md` DEC-003。
+> 拆分文档已移至 `docs/design/v2/kids-chat.md`。
 
 ### 7.1 SKILL.md 定义
 

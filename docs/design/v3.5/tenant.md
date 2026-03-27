@@ -1,6 +1,9 @@
-# V1 §5 多租户模块
+# V3.5 多租户模块
 
-> 摘自 `V1_DESIGN.md` §5，实现 `nanobot/tenant/` 时参考。
+> 本文档属于 **V3.5（多租户 + 管理后台）** 版本范围。原始设计摘自 `V1_DESIGN.md` §5。
+> 详见 `DECISIONS.md` DEC-004、`ROADMAP.md` V3.5 章节。
+
+> 实现 `nanobot/tenant/` 时参考。
 
 ## 5.1 数据模型
 

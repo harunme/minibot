@@ -1,6 +1,9 @@
-# V1 §7 Kids-Chat Skill
+# V2.0 Kids-Chat Skill
 
-> 摘自 `V1_DESIGN.md` §7，实现 `skills/kids-chat/` 时参考。
+> 本文档属于 **V2.0（知识库与内容管理）** 版本范围。原始设计摘自 `V1_DESIGN.md` §7。
+> 详见 `DECISIONS.md` DEC-003、`ROADMAP.md` V2.0 章节。
+
+> 实现 `skills/kids-chat/` 时参考。
 
 ## SKILL.md 定义
 

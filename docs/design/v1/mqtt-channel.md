@@ -127,7 +127,7 @@ class HardwareChannel(BaseChannel):
         device_id = topic_parts[1]
         category = topic_parts[2]
         
-        tenant = self.tenant_manager.get_by_device(device_id)
+        tenant = self.tenant_manager.get_by_device(device_id)  # V1: 简单验证; V3.5: 多租户
         if not tenant:
             await self._publish_error(device_id, "auth_failed", "设备未绑定")
             return
@@ -155,3 +155,12 @@ class HardwareChannel(BaseChannel):
 | 遗嘱消息 | 设备异常断线 → Broker 自动发布 LWT 到 status Topic |
 | 设备认证 | MQTT Broker 层 username/password 认证 + Channel 层 device_id 验证 |
 | 并发管理 | 每设备一个 Client ID，Broker 自动踢掉旧连接 |
+
+### 认证分层策略
+
+| 环境 | 认证方式 | 说明 |
+|------|----------|------|
+| **开发环境** | Mosquitto `password_file` | 简单易配，快速启动开发。使用 `mosquitto_passwd` 工具管理账号密码 |
+| **生产环境** | EMQX JWT Token 认证 | 统一 JWT 签发，支持设备级别精细权限控制。ROADMAP.md 中提到的"JWT 认证"指此场景 |
+
+> **说明**：V1 开发阶段使用 Mosquitto + password_file 即可满足需求。生产部署时切换到 EMQX 并启用 JWT 认证插件，Channel 代码无需修改（仅 MQTT 连接参数变化）。
