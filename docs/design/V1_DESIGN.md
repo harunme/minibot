@@ -1130,9 +1130,11 @@ class AdminConfig(Base):
 ```
 project-root/
 ├── docs/
-│   ├── PROJECT_COMMUNICATION.md    # 沟通记录
+│   ├── CLAUDE.md                   # docs 子目录规则（按需加载）
+│   ├── DECISIONS.md                # 技术决策记录
 │   ├── ROADMAP.md                  # 版本路线图
-│   └── v1/
+│   └── design/
+│       ├── CLAUDE.md               # 设计文档子目录规则
 │       └── V1_DESIGN.md           # 本文档
 │
 ├── nanobot/                        # nanobot 框架（扩展）
