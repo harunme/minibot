@@ -41,8 +41,8 @@
 **包含**：
 - 硬件 MQTT 双向语音通道（设备接入层）
 - 后端 WebSocket 客户端（对接火山引擎 ASR/TTS 流式 API）
-- TTS 语音合成（火山引擎 TTS / CosyVoice2 API）
-- STT 语音识别（火山引擎 ASR）
+- TTS 语音合成（火山引擎 TTS WebSocket 流式）
+- STT 语音识别（火山引擎 ASR WebSocket 流式）
 - MQTT Broker 部署（EMQX / Mosquitto）
 - 基础多租户（SQLite 多数据库）
 - 管理后台 MVP（注册/登录/设备绑定）
@@ -97,7 +97,7 @@
 │            │  WebSocket                           │  WebSocket              │
 │            ▼                                      │                         │
 │  ┌─────────────────────────────┐   ┌──────────────┴────────────────────┐    │
-│  │ 火山引擎 ASR (Streaming)    │   │ 火山引擎 TTS / CosyVoice2        │    │
+│  │ 火山引擎 ASR (Streaming)    │   │ 火山引擎 TTS (Streaming)          │    │
 │  │ 音频流 → 文本               │   │ 文本 → 音频流                     │    │
 │  └─────────────────────────────┘   └───────────────────────────────────┘    │
 │                                                                              │
@@ -606,9 +606,17 @@ class VolcengineASRProvider(ASRProvider):
             async for text in receiver():
                 yield text
             await sender_task
+
+
+# 扩展说明：
+# ASRProvider 抽象层支持多提供商扩展。V1 实现火山引擎，未来可新增：
+#   class AliyunASRProvider(ASRProvider):  # 阿里云 ASR
+#   class XXXASRProvider(ASRProvider):     # 其他厂商
+# 新增 Provider 只需继承 ASRProvider 并实现抽象方法，配置中切换 provider 即可。
+# Groq Whisper 作为降级方案保留（nanobot 框架已内置 transcription.py）。
 ```
 
-### 4.3 TTS 客户端（火山引擎语音合成 / CosyVoice2）
+### 4.3 TTS 客户端（火山引擎语音合成）
 
 ```python
 # nanobot/providers/tts.py
@@ -698,29 +706,11 @@ class VolcengineTTSProvider(TTSProvider):
         ...
 
 
-class CosyVoiceTTSProvider(TTSProvider):
-    """阿里 CosyVoice2 API 实现（备选）"""
-    
-    def __init__(self, api_key: str, api_base: str = None):
-        self.api_key = api_key
-        self.api_base = api_base or "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    
-    async def synthesize(self, text, voice_id="longxiaochun", **kwargs):
-        """调用 CosyVoice2 流式合成 API
-        
-        流式输出，首包延迟约 150ms。
-        支持的音色：longxiaochun, longhua, longshuo, longjing 等
-        """
-        # 通过 DashScope API 流式请求
-        ...
-    
-    async def list_voices(self):
-        return [
-            {"id": "longxiaochun", "name": "龙小淳", "language": "zh-CN", "gender": "female"},
-            {"id": "longhua", "name": "龙华", "language": "zh-CN", "gender": "male"},
-            {"id": "longshuo", "name": "龙朔", "language": "zh-CN", "gender": "male"},
-            {"id": "longjing", "name": "龙婧", "language": "zh-CN", "gender": "female"},
-        ]
+# 扩展说明：
+# TTSProvider 抽象层支持多提供商扩展。未来可新增其他厂商实现：
+#   class AliyunTTSProvider(TTSProvider):  # 阿里云 TTS
+#   class XXXTTSProvider(TTSProvider):     # 其他厂商
+# 新增 Provider 只需继承 TTSProvider 并实现抽象方法，配置中切换 provider 即可。
 ```
 
 ### 4.4 ASR/TTS 配置
@@ -729,7 +719,7 @@ class CosyVoiceTTSProvider(TTSProvider):
 // config.json 中的 ASR 和 TTS 配置
 {
   "asr": {
-    "provider": "volcengine",           // "volcengine" | "groq_whisper"
+    "provider": "volcengine",           // V1 主选；抽象层支持扩展（未来可接阿里等）
     "volcengine": {
       "appId": "xxx",
       "token": "xxx",
@@ -737,26 +727,16 @@ class CosyVoiceTTSProvider(TTSProvider):
       "language": "zh-CN"
     },
     "groq_whisper": {
-      "apiKey": "sk-xxx"               // 备选：沿用 nanobot 已有的 Groq Whisper
+      "apiKey": "sk-xxx"               // 降级方案：沿用 nanobot 已有的 Groq Whisper
     }
   },
   "tts": {
-    "provider": "volcengine",           // "volcengine" | "cosyvoice" | "minimax"
+    "provider": "volcengine",           // V1 主选；抽象层支持扩展
     "volcengine": {
       "appId": "xxx",
       "token": "xxx",
       "cluster": "volcano_tts",
       "defaultVoice": "zh_female_cancan_mars_bigtts"
-    },
-    "cosyvoice": {
-      "apiKey": "sk-xxx",
-      "model": "cosyvoice-v2",
-      "defaultVoice": "longxiaochun"
-    },
-    "minimax": {
-      "apiKey": "xxx",
-      "groupId": "xxx",
-      "defaultVoice": "male-qn-qingse"
     }
   }
 }
@@ -831,7 +811,7 @@ CREATE TABLE contents (
 -- 设备配置表
 CREATE TABLE device_configs (
     device_id   TEXT PRIMARY KEY,
-    voice_id    TEXT DEFAULT 'longxiaochun',  -- 默认音色
+    voice_id    TEXT DEFAULT 'zh_female_cancan_mars_bigtts',  -- 默认音色（火山引擎）
     volume      INTEGER DEFAULT 70,           -- 音量 0-100
     wake_word   TEXT DEFAULT '你好小伙伴',     -- 唤醒词
     config      TEXT,                          -- JSON 扩展配置
@@ -1057,16 +1037,6 @@ metadata: '{"nanobot": {"always": true}}'
       "token": "xxx",
       "cluster": "volcano_tts",
       "defaultVoice": "zh_female_cancan_mars_bigtts"
-    },
-    "cosyvoice": {
-      "apiKey": "sk-xxx",
-      "model": "cosyvoice-v2",
-      "defaultVoice": "longxiaochun"
-    },
-    "minimax": {
-      "apiKey": "xxx",
-      "groupId": "xxx",
-      "defaultVoice": "male-qn-qingse"
     }
   },
   
@@ -1103,13 +1073,13 @@ class HardwareChannelConfig(Base):
 class ASRConfig(Base):
     provider: str = "volcengine"
     volcengine: VolcengineASRConfig = Field(default_factory=VolcengineASRConfig)
-    groq_whisper: GroqWhisperConfig = Field(default_factory=GroqWhisperConfig)
+    groq_whisper: GroqWhisperConfig = Field(default_factory=GroqWhisperConfig)  # 降级方案
+    # 抽象层预留扩展，未来可追加阿里等厂商配置
 
 class TTSConfig(Base):
     provider: str = "volcengine"
     volcengine: VolcengineTTSConfig = Field(default_factory=VolcengineTTSConfig)
-    cosyvoice: CosyVoiceTTSConfig = Field(default_factory=CosyVoiceTTSConfig)
-    minimax: MiniMaxTTSConfig = Field(default_factory=MiniMaxTTSConfig)
+    # 抽象层预留扩展，未来可追加其他厂商配置
 
 class TenantConfig(Base):
     data_dir: str = "~/.minibot/data"
@@ -1142,8 +1112,8 @@ project-root/
 │   │   ├── hardware.py            # [NEW] 硬件 MQTT Channel
 │   │   └── ... (现有渠道)
 │   ├── providers/
-│   │   ├── asr.py                 # [NEW] ASR Provider（火山引擎 WebSocket）
-│   │   ├── tts.py                 # [NEW] TTS Provider（火山引擎 WebSocket / CosyVoice2）
+│   │   ├── asr.py                 # [NEW] ASR Provider（火山引擎 WebSocket；抽象层支持多厂商扩展）
+│   │   ├── tts.py                 # [NEW] TTS Provider（火山引擎 WebSocket；抽象层支持多厂商扩展）
 │   │   └── ... (现有 Provider)
 │   ├── tenant/                    # [NEW] 多租户模块
 │   │   ├── __init__.py
@@ -1352,7 +1322,7 @@ location /mqtt {
 | 端到端语音对话 | 测试客户端 MQTT 发语音 → 后端 ASR → Agent → TTS → MQTT 回音频 | 收到合成语音回复 |
 | 设备认证 | 未绑定设备 MQTT 连接 | 收到 auth_failed 错误 |
 | 多租户隔离 | 两设备绑定不同家庭，同时对话 | 各自独立会话、互不影响 |
-| TTS 降级 | 模拟火山引擎 TTS 失败 | 自动切换 CosyVoice2 备选 |
+| TTS 降级 | 模拟火山引擎 TTS 失败 | 返回友好错误提示，日志记录异常 |
 | ASR 降级 | 发送空白/噪音音频 | 返回友好错误提示 |
 | MQTT 断线重连 | 模拟网络中断后恢复 | 设备自动重连，会话恢复 |
 | 遗嘱消息 | 模拟设备异常断线 | 后端收到 LWT，设备状态更新为 offline |
@@ -1379,15 +1349,15 @@ python tools/hardware_test_client.py --device dev001 --status --battery 85
 | 编号 | 问题 | 状态 | 备注 |
 |------|------|------|------|
 | Q1 | 火山引擎 ASR/TTS WebSocket API 具体接入方式和定价 | 待验证 | 需注册火山引擎获取 AppId/Token 实际测试 |
-| Q2 | MQTT Broker 选型：EMQX vs Mosquitto | 待定 | V1 推荐 Mosquitto 快速开发，生产切 EMQX |
-| Q3 | MQTT QoS 级别：音频数据 QoS 0（速度优先）vs QoS 1（可靠优先） | 推荐 QoS 0 | 音频流丢帧可接受，优先低延迟 |
+| Q2 | MQTT Broker 选型：EMQX vs Mosquitto | ✅ 已决定 | V1 用 Mosquitto 快速开发，生产切 EMQX |
+| Q3 | MQTT QoS 级别：音频数据 QoS 0（速度优先）vs QoS 1（可靠优先） | ✅ 已决定 | 音频流 QoS 0 优先低延迟，控制/状态 QoS 1 |
 | Q4 | 音频编解码库选择 | 待定 | opuslib（C 绑定）vs pyogg vs 纯 Python 方案 |
 | Q5 | MQTT payload 大小限制与音频分片策略 | 待测试 | Mosquitto 默认 max_packet_size 约 256MB，但建议单帧 ≤ 4KB |
 | Q6 | 管理后台是否需要国际化 | 待定 | V1 仅支持中文 |
 | Q7 | 设备 ID 生成方案 | 待定 | 硬件烧录 vs 首次配网时生成 |
-| Q8 | 唤醒词检测是否在端侧完成 | 推荐端侧 | 节省带宽和服务端算力 |
-| Q9 | CosyVoice2 API 作为 TTS 备选方案的优先级 | 待定 | 主选火山引擎 TTS，备选 CosyVoice2 |
-| Q10 | 火山引擎 ASR 与已有 Groq Whisper 的切换策略 | 待定 | 保留 Groq Whisper 作为降级方案 |
+| Q8 | 唤醒词检测是否在端侧完成 | ✅ 已决定 | 推荐端侧，节省带宽和服务端算力 |
+| ~~Q9~~ | ~~CosyVoice2 API 作为 TTS 备选方案的优先级~~ | ✅ 已关闭 | V1 统一使用火山引擎 TTS，不再需要备选 |
+| Q10 | ASR 多提供商扩展时机 | 待定 | V1 仅实现火山引擎；抽象层已预留，未来可扩展阿里等 |
 
 ---
 

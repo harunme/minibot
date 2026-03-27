@@ -33,7 +33,7 @@ V1.0 核心对话链路 (MVP)
 |------|------|--------|
 | 硬件 MQTT Channel | MQTT 双向语音通道，设备接入层，支持 Opus/PCM 音频帧 | P0 |
 | ASR WebSocket 客户端 | 对接火山引擎 ASR 流式识别 API | P0 |
-| TTS WebSocket 客户端 | 对接火山引擎 TTS / CosyVoice2 流式合成 API | P0 |
+| TTS WebSocket 客户端 | 对接火山引擎 TTS 流式合成 API | P0 |
 | MQTT Broker 部署 | Mosquitto（开发）/ EMQX（生产） | P0 |
 | 多租户框架 | SQLite 多数据库，租户 CRUD，设备绑定/路由 | P0 |
 | 管理后台 MVP | FastAPI 后端：注册/登录/设备绑定 | P1 |
@@ -46,8 +46,8 @@ V1.0 核心对话链路 (MVP)
 - `aiomqtt` / `paho-mqtt` — MQTT 设备通信（新增）
 - `websockets`（已有）— 后端对接火山引擎 ASR/TTS 流式 API
 - Mosquitto / EMQX — MQTT Broker（新增）
-- 火山引擎 ASR/TTS WebSocket API — 语音识别与合成（新增）
-- CosyVoice2 API — TTS 备选方案
+- 火山引擎 ASR WebSocket API — 语音识别（新增，V1 主选；ASRProvider 抽象层支持扩展，未来可接阿里等）
+- 火山引擎 TTS WebSocket API — 语音合成（新增，V1 主选；TTSProvider 抽象层支持扩展）
 - SQLite — 多租户存储
 - FastAPI + JWT — 管理后台
 - React + TypeScript + Tailwind CSS — 管理前端
@@ -77,7 +77,7 @@ V1.0 核心对话链路 (MVP)
 - nanobot 框架稳定运行
 - MQTT Broker（Mosquitto / EMQX）可用
 - 火山引擎 ASR/TTS WebSocket API 可用
-- CosyVoice2 API 或 MiniMax TTS API 作为 TTS 备选
+- ASR/TTS Provider 抽象层保留扩展性（Groq Whisper 可作 ASR 降级方案）
 
 ---
 
@@ -218,7 +218,7 @@ graph LR
 
 | 风险 | 影响 | 应对策略 |
 |------|------|----------|
-| 火山引擎 ASR/TTS API 限制/变更 | V1 语音链路不可用 | ASR 备选 Groq Whisper，TTS 备选 CosyVoice2/MiniMax，接口抽象可快速切换 |
+| 火山引擎 ASR/TTS API 限制/变更 | V1 语音链路不可用 | ASR 可降级 Groq Whisper（框架已有），TTS 抽象层支持扩展其他厂商；ASR/TTS Provider 接口统一可快速切换 |
 | MQTT Broker 性能瓶颈 | 设备接入受限 | V1 用 Mosquitto 验证，生产切 EMQX 支撑百万连接 |
 | 音频延迟过高（MQTT→ASR→Agent→TTS→MQTT 全链路） | 用户体验差 | 流式合成 + Opus 压缩，目标全链路首字节 < 1s |
 | ChromaDB 性能瓶颈 | V2 知识库检索慢 | 预留切换 Milvus 的接口抽象 |

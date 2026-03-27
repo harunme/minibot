@@ -57,13 +57,13 @@ class HardwareChannelConfig(Base):
 class ASRConfig(Base):
     provider: str = "volcengine"
     volcengine: VolcengineASRConfig = Field(default_factory=VolcengineASRConfig)
-    groq_whisper: GroqWhisperConfig = Field(default_factory=GroqWhisperConfig)
+    groq_whisper: GroqWhisperConfig = Field(default_factory=GroqWhisperConfig)  # 降级方案
+    # 抽象层预留扩展，未来可追加阿里等厂商配置
 
 class TTSConfig(Base):
     provider: str = "volcengine"
     volcengine: VolcengineTTSConfig = Field(default_factory=VolcengineTTSConfig)
-    cosyvoice: CosyVoiceTTSConfig = Field(default_factory=CosyVoiceTTSConfig)
-    minimax: MiniMaxTTSConfig = Field(default_factory=MiniMaxTTSConfig)
+    # 抽象层预留扩展，未来可追加其他厂商配置
 
 class TenantConfig(Base):
     data_dir: str = "~/.minibot/data"

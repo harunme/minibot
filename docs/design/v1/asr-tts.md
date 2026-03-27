@@ -6,13 +6,15 @@
 
 后端内部通过 WebSocket 客户端连接火山引擎的 ASR（语音识别）和 TTS（语音合成）流式 API。这一层对上层 Channel 透明，Channel 只需调用 `asr_client.recognize()` 和 `tts_client.synthesize()`。
 
+**V1 统一使用火山引擎**，ASR/TTS 均通过 WebSocket 流式 API 调用。抽象层（`ASRProvider` / `TTSProvider`）支持多提供商扩展，未来可接入阿里等厂商。
+
 ## 4.2 ASR 客户端（火山引擎语音识别）
 
 ```python
 # nanobot/providers/asr.py
 
 class ASRProvider(ABC):
-    """ASR 语音识别提供者抽象基类"""
+    """ASR 语音识别提供者抽象基类 — 支持多提供商扩展"""
     
     @abstractmethod
     async def recognize(self, audio_data: bytes, *, format: str = "opus",
@@ -28,22 +30,25 @@ class ASRProvider(ABC):
 
 
 class VolcengineASRProvider(ASRProvider):
-    """火山引擎 ASR WebSocket 流式识别实现"""
+    """火山引擎 ASR WebSocket 流式识别实现（V1 主选）"""
     
     def __init__(self, app_id: str, token: str, cluster: str = "volcengine_streaming_common"):
         self.ws_url = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
     
     # recognize(): WebSocket 发送完整音频，获取识别结果
     # recognize_stream(): 并行发送音频 + 接收结果
+
+# 扩展：未来可新增 AliyunASRProvider(ASRProvider) 等
+# 降级：Groq Whisper 已有框架实现（nanobot transcription.py），可作降级方案
 ```
 
-## 4.3 TTS 客户端（火山引擎语音合成 / CosyVoice2）
+## 4.3 TTS 客户端（火山引擎语音合成）
 
 ```python
 # nanobot/providers/tts.py
 
 class TTSProvider(ABC):
-    """TTS 语音合成提供者抽象基类"""
+    """TTS 语音合成提供者抽象基类 — 支持多提供商扩展"""
     
     @abstractmethod
     async def synthesize(self, text: str, voice_id: str = "default", *,
@@ -63,15 +68,11 @@ class TTSProvider(ABC):
 
 
 class VolcengineTTSProvider(TTSProvider):
-    """火山引擎 TTS WebSocket 流式合成实现"""
+    """火山引擎 TTS WebSocket 流式合成实现（V1 主选）"""
     # ws_url = "wss://openspeech.bytedance.com/api/v1/tts/ws_binary"
     # 预置音色：灿灿、醇厚、爽快等
 
-
-class CosyVoiceTTSProvider(TTSProvider):
-    """阿里 CosyVoice2 API 实现（备选）"""
-    # api_base = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    # 预置音色：龙小淳、龙华、龙朔、龙婧
+# 扩展：未来可新增其他厂商实现，只需继承 TTSProvider
 ```
 
 ## 4.4 ASR/TTS 配置
@@ -79,15 +80,13 @@ class CosyVoiceTTSProvider(TTSProvider):
 ```jsonc
 {
   "asr": {
-    "provider": "volcengine",           // "volcengine" | "groq_whisper"
+    "provider": "volcengine",           // V1 主选；抽象层支持扩展
     "volcengine": { "appId": "xxx", "token": "xxx", "cluster": "volcengine_streaming_common", "language": "zh-CN" },
-    "groq_whisper": { "apiKey": "sk-xxx" }
+    "groq_whisper": { "apiKey": "sk-xxx" }  // 降级方案
   },
   "tts": {
-    "provider": "volcengine",           // "volcengine" | "cosyvoice" | "minimax"
-    "volcengine": { "appId": "xxx", "token": "xxx", "cluster": "volcano_tts", "defaultVoice": "zh_female_cancan_mars_bigtts" },
-    "cosyvoice": { "apiKey": "sk-xxx", "model": "cosyvoice-v2", "defaultVoice": "longxiaochun" },
-    "minimax": { "apiKey": "xxx", "groupId": "xxx", "defaultVoice": "male-qn-qingse" }
+    "provider": "volcengine",           // V1 主选；抽象层支持扩展
+    "volcengine": { "appId": "xxx", "token": "xxx", "cluster": "volcano_tts", "defaultVoice": "zh_female_cancan_mars_bigtts" }
   }
 }
 ```

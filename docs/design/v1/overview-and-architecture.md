@@ -20,8 +20,8 @@
 **包含**：
 - 硬件 MQTT 双向语音通道（设备接入层）
 - 后端 WebSocket 客户端（对接火山引擎 ASR/TTS 流式 API）
-- TTS 语音合成（火山引擎 TTS / CosyVoice2 API）
-- STT 语音识别（火山引擎 ASR）
+- TTS 语音合成（火山引擎 TTS WebSocket 流式）
+- STT 语音识别（火山引擎 ASR WebSocket 流式）
 - MQTT Broker 部署（EMQX / Mosquitto）
 - 基础多租户（SQLite 多数据库）
 - 管理后台 MVP（注册/登录/设备绑定）

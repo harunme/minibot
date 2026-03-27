@@ -113,7 +113,7 @@ python tools/hardware_test_client.py --device dev001 --token xxx --broker localh
 
 **里程碑**：M1 设计评审 → M2 MQTT通道 → M3 ASR/TTS → M4 对话链路 → M5 多租户 → M6 管理后台 → M7 集成验收
 
-**V1 包含**：硬件 MQTT Channel、ASR/TTS WebSocket 客户端、MQTT Broker 部署、多租户框架、管理后台 MVP、Kids-Chat Skill、测试客户端。
+**V1 包含**：硬件 MQTT Channel、火山引擎 ASR/TTS WebSocket 客户端（抽象层支持多厂商扩展）、MQTT Broker 部署、多租户框架、管理后台 MVP、Kids-Chat Skill、测试客户端。
 
 **V1 不包含 ⚠️**：RAG 知识库（V2）、音色克隆（V3）、硬件固件（V4）、移动端 App。
 
