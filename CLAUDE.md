@@ -14,7 +14,7 @@
 
 ## 0. 上下文引用
 
-- 版本路线图详见 `docs/ROADMAP.md`（V1-V4 范围和里程碑）
+- 版本路线图详见 `docs/ROADMAP.md`（V1-V5 范围和里程碑）
 - 技术决策详见 `docs/DECISIONS.md`
 - 详细设计按版本拆分在 `docs/design/v1/` 下（开发具体模块时只读对应文件，见 `docs/design/CLAUDE.md` 路由表）
 
@@ -115,7 +115,7 @@ python tools/hardware_test_client.py --device dev001 --token xxx --broker localh
 
 **V1 包含**：硬件 MQTT Channel、火山引擎 ASR/TTS WebSocket 客户端（抽象层支持多厂商扩展）、MQTT Broker 部署、多租户框架、管理后台 MVP、Kids-Chat Skill、测试客户端。
 
-**V1 不包含 ⚠️**：RAG 知识库（V2）、音色克隆（V3）、硬件固件（V4）、移动端 App。
+**V1 不包含 ⚠️**：RAG 知识库（V2）、硬件固件（V3）、音色克隆（V4）、移动端 App（V5b）。
 
 > 详细设计见 `docs/design/v1/` 目录（按模块拆分，路由表见 `docs/design/CLAUDE.md`）。
 
@@ -146,7 +146,7 @@ python tools/hardware_test_client.py --device dev001 --token xxx --broker localh
 ### 禁止行为
 
 - ❌ 修改 nanobot 核心框架文件
-- ❌ 在 V1 实现 V2-V4 功能
+- ❌ 在 V1 实现 V2-V5 功能
 - ❌ `print()` 做日志 / 阻塞 I/O / 硬编码密钥 / 拼接 SQL / 裸 `except`
 - ❌ 删除或修改现有测试 / 添加无版本约束依赖
 - ❌ 一次性重写大文件（用精确替换编辑）
