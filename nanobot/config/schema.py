@@ -205,7 +205,6 @@ class Config(BaseSettings):
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     asr: ASRConfig = Field(default_factory=ASRConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
-    websocket_hw: WebSocketChannelConfig = Field(default_factory=WebSocketChannelConfig)
 
     @property
     def workspace_path(self) -> Path:

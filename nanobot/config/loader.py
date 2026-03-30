@@ -74,4 +74,16 @@ def _migrate_config(data: dict) -> dict:
     exec_cfg = tools.get("exec", {})
     if "restrictToWorkspace" in exec_cfg and "restrictToWorkspace" not in tools:
         tools["restrictToWorkspace"] = exec_cfg.pop("restrictToWorkspace")
+
+    # Move top-level websocket_hw → channels.websocket_hw
+    # (was incorrectly placed as a Config top-level field instead of inside channels)
+    for key in ("websocket_hw", "websocketHw"):
+        if key in data:
+            channels = data.setdefault("channels", {})
+            if "websocket_hw" not in channels:
+                channels["websocket_hw"] = data.pop(key)
+            else:
+                data.pop(key)
+            break
+
     return data
