@@ -25,6 +25,7 @@ import sys
 from typing import Any
 
 import websockets
+from websockets.protocol import State as WsState
 
 # 可选依赖：sounddevice 用于音频录制/播放
 try:
@@ -282,7 +283,7 @@ class WebSocketTestClient:
             while self._recording and self._running:
                 try:
                     audio_data = await asyncio.wait_for(audio_ready.get(), timeout=0.5)
-                    if self._ws and self._ws.open:
+                    if self._ws and self._ws.state == WsState.OPEN:
                         await self._ws.send(audio_data)
                 except asyncio.TimeoutError:
                     continue
@@ -406,8 +407,4 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\n用户中断")
     finally:
-        loop.close()
-
-
-if __name__ == "__main__":
-    main()
+        loop

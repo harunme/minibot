@@ -224,7 +224,7 @@ class VolcengineASRProvider(ASRProvider):
         try:
             async with websockets.connect(
                 self._ws_url,
-                extra_headers=self._get_headers(),
+                additional_headers=self._get_headers(),
                 open_timeout=10,
                 close_timeout=10,
             ) as ws:
@@ -300,7 +300,7 @@ class VolcengineASRProvider(ASRProvider):
         try:
             async with websockets.connect(
                 self._ws_url,
-                extra_headers=self._get_headers(),
+                additional_headers=self._get_headers(),
                 open_timeout=10,
                 close_timeout=10,
             ) as ws:
