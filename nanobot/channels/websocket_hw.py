@@ -26,6 +26,7 @@ from enum import Enum
 from typing import Any, AsyncIterator
 
 import websockets
+from websockets.protocol import State as WsState
 from loguru import logger
 
 from nanobot.bus.events import InboundMessage, OutboundMessage
@@ -317,7 +318,7 @@ class ConnectionHandler:
         - t_tts_first: TTS 首个音频帧发出
         - t_tts_done: TTS 发送完成
         """
-        if not self._ws.open:
+        if self._ws.state != WsState.OPEN:
             return
 
         self._tts_abort = False
@@ -350,7 +351,7 @@ class ConnectionHandler:
                     if self._tts_abort:
                         logger.info("[{}] TTS 被中止", self.session_id)
                         break
-                    if not self._ws.open:
+                    if self._ws.state != WsState.OPEN:
                         break
                     if not t_tts_first:
                         t_tts_first = time.monotonic()
@@ -377,7 +378,7 @@ class ConnectionHandler:
 
     async def _send_json(self, data: dict[str, Any]) -> None:
         """发送 JSON 消息"""
-        if self._ws.open:
+        if self._ws.state == WsState.OPEN:
             try:
                 await self._ws.send(json.dumps(data, ensure_ascii=False))
             except websockets.ConnectionClosed:
