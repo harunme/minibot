@@ -19,10 +19,11 @@ import asyncio
 import base64
 import json
 from abc import ABC, abstractmethod
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 import httpx
 import websockets
+from loguru import logger
 
 from nanobot.config.schema import ASRConfig
 
@@ -42,7 +43,7 @@ class ASRProvider(ABC):
         self,
         audio_data: bytes,
         *,
-        format: str = "opus",
+        audio_format: str = "opus",
         sample_rate: int = 16000,
         language: str = "zh-CN",
     ) -> str | None:
@@ -50,7 +51,7 @@ class ASRProvider(ABC):
 
         Args:
             audio_data: 音频数据（bytes）
-            format: 音频格式（opus/pcm）
+            audio_format: 音频格式（opus/pcm）
             sample_rate: 采样率
             language: 语言代码
 
@@ -64,7 +65,7 @@ class ASRProvider(ABC):
         self,
         audio_stream: AsyncIterator[bytes],
         *,
-        format: str = "opus",
+        audio_format: str = "opus",
         sample_rate: int = 16000,
     ) -> AsyncIterator[str]:
         """流式识别：边发送音频边获取中间结果
@@ -74,7 +75,7 @@ class ASRProvider(ABC):
 
         Args:
             audio_stream: 音频流
-            format: 音频格式
+            audio_format: 音频格式
             sample_rate: 采样率
 
         Yields:
@@ -122,7 +123,7 @@ class VolcengineASRProvider(ASRProvider):
         self,
         audio_data: bytes,
         *,
-        format: str = "opus",
+        audio_format: str = "opus",
         sample_rate: int = 16000,
         language: str = "zh-CN",
     ) -> str | None:
@@ -133,29 +134,29 @@ class VolcengineASRProvider(ASRProvider):
         try:
             # 对于完整音频，使用单次识别模式
             # 火山引擎 ASR 支持发送完整音频后获取结果
-            results = await self._recognize_once(audio_data, format, sample_rate, language)
+            results = await self._recognize_once(audio_data, audio_format, sample_rate, language)
             if results:
                 # 返回最后一个完整句子
                 return results[-1].get("text", "") if isinstance(results, list) else results
             return None
         except Exception as e:
-            import loguru
-
-            loguru.logger.warning("ASR 识别失败: {}", e)
+            logger.warning("ASR 识别失败: {}", e)
             return None
 
     async def recognize_stream(
         self,
         audio_stream: AsyncIterator[bytes],
         *,
-        format: str = "opus",
+        audio_format: str = "opus",
         sample_rate: int = 16000,
     ) -> AsyncIterator[str]:
         """流式识别：边发送音频边获取中间结果
 
         通过 WebSocket 并行发送音频和接收识别结果。
+        使用单一 WebSocket 连接，sender 和 receiver 共享同一连接。
         """
-        await self._ws_stream(audio_stream, format, sample_rate)
+        async for text in self._ws_stream(audio_stream, audio_format, sample_rate):
+            yield text
 
     async def is_available(self) -> bool:
         """检查服务可用性"""
@@ -173,7 +174,7 @@ class VolcengineASRProvider(ASRProvider):
     async def _recognize_once(
         self,
         audio_data: bytes,
-        format: str,
+        audio_format: str,
         sample_rate: int,
         _language: str,
     ) -> list[dict]:
@@ -188,25 +189,21 @@ class VolcengineASRProvider(ASRProvider):
                     results.append(data)
                     result_event.set()
                 elif data.get("code") and data["code"] != 1000:
-                    import loguru
-
-                    loguru.logger.warning("ASR 错误: {} - {}", data.get("code"), data.get("message"))
+                    logger.warning("ASR 错误: {} - {}", data.get("code"), data.get("message"))
                     result_event.set()
             except json.JSONDecodeError:
                 pass
 
         # 启动 WebSocket 连接
         ws_task = asyncio.create_task(
-            self._ws_connect_and_send(audio_data, format, sample_rate, on_message)
+            self._ws_connect_and_send(audio_data, audio_format, sample_rate, on_message)
         )
 
         # 等待结果（超时 30 秒）
         try:
             await asyncio.wait_for(result_event.wait(), timeout=30.0)
         except asyncio.TimeoutError:
-            import loguru
-
-            loguru.logger.warning("ASR 识别超时")
+            logger.warning("ASR 识别超时")
 
         ws_task.cancel()
         return results
@@ -214,95 +211,90 @@ class VolcengineASRProvider(ASRProvider):
     async def _ws_stream(
         self,
         audio_stream: AsyncIterator[bytes],
-        format: str,
+        audio_format: str,
         sample_rate: int,
     ) -> AsyncIterator[str]:
-        """WebSocket 流式识别"""
-        # 实际实现：并行发送音频和接收结果
-        queue: asyncio.Queue[str] = asyncio.Queue()
+        """WebSocket 流式识别
 
-        async def receiver() -> None:
-            """接收识别结果"""
-            try:
-                async with websockets.connect(
-                    self._ws_url,
-                    extra_headers=self._get_headers(),
-                    open_timeout=10,
-                    close_timeout=10,
-                ) as ws:
-                    # 发送开始请求
-                    await ws.send(json.dumps(self._build_start_request(format, sample_rate)))
+        使用单一 WebSocket 连接，通过 asyncio.Task 并行处理发送和接收，
+        接收到的识别结果通过 asyncio.Queue 实时传递给调用方。
+        """
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
 
-                    # 并行接收结果
-                    async for message in ws:
-                        data = json.loads(message)
-                        if data.get("code") == 1000:
-                            text = data.get("result", {}).get("text", "")
-                            if text:
-                                await queue.put(text)
-                        elif data.get("event") == "finished":
-                            await queue.put("")  # 结束信号
-                            break
-                        elif data.get("code") and data["code"] != 1000:
-                            import loguru
-
-                            loguru.logger.warning("ASR 流式错误: {}", data)
-                            break
-            except Exception as e:
-                import loguru
-
-                loguru.logger.warning("ASR 接收错误: {}", e)
-
-        async def sender() -> None:
-            """发送音频"""
-            try:
-                async with websockets.connect(
-                    self._ws_url,
-                    extra_headers=self._get_headers(),
-                    open_timeout=10,
-                    close_timeout=10,
-                ) as ws:
-                    # 发送开始请求
-                    await ws.send(json.dumps(self._build_start_request(format, sample_rate)))
-
-                    # 发送音频
-                    async for audio_chunk in audio_stream:
-                        audio_base64 = base64.b64encode(audio_chunk).decode("utf-8")
-                        await ws.send(json.dumps({
-                            "event": "audio",
-                            "data": {"audio": audio_base64},
-                        }))
-                        await asyncio.sleep(0.01)  # 控制发送速率
-
-                    # 发送结束请求
-                    await ws.send(json.dumps({"event": "done"}))
-            except Exception as e:
-                import loguru
-
-                loguru.logger.warning("ASR 发送错误: {}", e)
-
-        # 并行执行发送和接收
         try:
-            await asyncio.gather(receiver(), sender())
-        except Exception:
-            pass
+            async with websockets.connect(
+                self._ws_url,
+                extra_headers=self._get_headers(),
+                open_timeout=10,
+                close_timeout=10,
+            ) as ws:
+                # 发送开始请求
+                await ws.send(json.dumps(self._build_start_request(audio_format, sample_rate)))
 
-        # 从队列读取结果
-        while True:
-            try:
-                result = queue.get_nowait()
-                if result == "":
-                    break
-                yield result
-            except asyncio.QueueEmpty:
-                break
+                async def sender() -> None:
+                    """发送音频到共享的 WebSocket 连接"""
+                    try:
+                        async for audio_chunk in audio_stream:
+                            audio_base64 = base64.b64encode(audio_chunk).decode("utf-8")
+                            await ws.send(json.dumps({
+                                "event": "audio",
+                                "data": {"audio": audio_base64},
+                            }))
+                            await asyncio.sleep(0.01)  # 控制发送速率
+
+                        # 发送结束请求
+                        await ws.send(json.dumps({"event": "done"}))
+                    except Exception as e:
+                        logger.warning("ASR 发送错误: {}", e)
+
+                async def receiver() -> None:
+                    """从共享的 WebSocket 连接接收识别结果"""
+                    try:
+                        async for message in ws:
+                            data = json.loads(message)
+                            if data.get("code") == 1000:
+                                text = data.get("result", {}).get("text", "")
+                                if text:
+                                    await queue.put(text)
+                            elif data.get("event") == "finished":
+                                break
+                            elif data.get("code") and data["code"] != 1000:
+                                logger.warning("ASR 流式错误: {}", data)
+                                break
+                    except Exception as e:
+                        logger.warning("ASR 接收错误: {}", e)
+                    finally:
+                        # 发送结束信号
+                        await queue.put(None)
+
+                # 并行启动 sender 和 receiver，receiver 完成即结束
+                sender_task = asyncio.create_task(sender())
+                receiver_task = asyncio.create_task(receiver())
+
+                # 从队列实时 yield 结果（真正的流式输出）
+                while True:
+                    result = await queue.get()
+                    if result is None:
+                        break
+                    yield result
+
+                # 清理 tasks
+                sender_task.cancel()
+                try:
+                    await sender_task
+                except asyncio.CancelledError:
+                    pass
+                await receiver_task
+
+        except Exception as e:
+            logger.warning("ASR WebSocket 连接失败: {}", e)
 
     async def _ws_connect_and_send(
         self,
         audio_data: bytes,
-        format: str,
+        audio_format: str,
         sample_rate: int,
-        on_message: callable,
+        on_message: Callable,
     ) -> None:
         """连接 WebSocket 并发送音频"""
         try:
@@ -313,7 +305,7 @@ class VolcengineASRProvider(ASRProvider):
                 close_timeout=10,
             ) as ws:
                 # 发送开始请求
-                await ws.send(json.dumps(self._build_start_request(format, sample_rate)))
+                await ws.send(json.dumps(self._build_start_request(audio_format, sample_rate)))
 
                 # 接收初始响应
                 response = await asyncio.wait_for(ws.recv(), timeout=10.0)
@@ -334,9 +326,7 @@ class VolcengineASRProvider(ASRProvider):
                     except asyncio.TimeoutError:
                         break
         except Exception as e:
-            import loguru
-
-            loguru.logger.warning("WebSocket 连接失败: {}", e)
+            logger.warning("WebSocket 连接失败: {}", e)
 
     def _get_headers(self) -> dict[str, str]:
         """获取 WebSocket 请求头"""
@@ -346,7 +336,7 @@ class VolcengineASRProvider(ASRProvider):
             "X-App-Id": self._app_id,
         }
 
-    def _build_start_request(self, format: str, sample_rate: int) -> dict:
+    def _build_start_request(self, audio_format: str, sample_rate: int) -> dict:
         """构建开始请求"""
         return {
             "event": "start",
@@ -354,7 +344,7 @@ class VolcengineASRProvider(ASRProvider):
                 "appid": self._app_id,
                 "cluster": self._cluster,
                 "language": self._language,
-                "audio_format": "opus" if format == "opus" else "pcm",
+                "audio_format": "opus" if audio_format == "opus" else "pcm",
                 "sample_rate": sample_rate,
                 "enable_vad": True,  # 启用语音活动检测
                 "enable_punctuation": True,  # 启用标点

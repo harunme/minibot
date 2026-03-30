@@ -55,6 +55,12 @@ class TestVolcengineASRProvider:
         assert request["data"]["enable_vad"] is True
         assert request["data"]["enable_punctuation"] is True
 
+    def test_build_start_request_pcm(self):
+        """测试 PCM 格式开始请求构建"""
+        provider = VolcengineASRProvider(app_id="app123")
+        request = provider._build_start_request("pcm", 16000)
+        assert request["data"]["audio_format"] == "pcm"
+
     @pytest.mark.asyncio
     async def test_is_available_success(self):
         """测试服务可用性检查（成功）"""

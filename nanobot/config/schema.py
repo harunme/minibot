@@ -128,17 +128,16 @@ class TTSConfig(Base):
     volcengine: VolcengineTTSConfig = Field(default_factory=VolcengineTTSConfig)
 
 
-class HardwareChannelConfig(Base):
-    """硬件 MQTT Channel 配置"""
+class WebSocketChannelConfig(Base):
+    """WebSocket 语音通道配置（面向 Tauri/Web 客户端）"""
 
     enabled: bool = False
-    mqtt_host: str = "localhost"
-    mqtt_port: int = 1883
-    mqtt_username: str = ""
-    mqtt_password: str = ""
-    mqtt_tls: bool = False
+    host: str = "0.0.0.0"
+    port: int = 9000
+    auth_key: str = ""  # 认证密钥，为空则跳过认证（开发模式）
+    max_connections: int = 100
+    timeout_seconds: int = 120  # 无活动超时（秒）
     audio_format: str = "opus"
-    max_devices: int = 100
     allow_from: list[str] = ["*"]
 
 
@@ -206,7 +205,7 @@ class Config(BaseSettings):
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     asr: ASRConfig = Field(default_factory=ASRConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
-    hardware: HardwareChannelConfig = Field(default_factory=HardwareChannelConfig)
+    websocket_hw: WebSocketChannelConfig = Field(default_factory=WebSocketChannelConfig)
 
     @property
     def workspace_path(self) -> Path:

@@ -7,10 +7,10 @@
 ```
 design/
 ├── CLAUDE.md              # 本文件（AI 路由表）
-├── V1_DESIGN.md           # V1.0 完整设计文档（供人工阅读）
+├── V1_DESIGN.md           # V1.0 完整设计文档（供人工阅读，含历史 MQTT 设计）
 ├── v1/                    # V1.0 按章节拆分（供 AI 按需读取）
 │   ├── overview-and-architecture.md
-│   ├── mqtt-channel.md
+│   ├── websocket-channel.md
 │   ├── asr-tts.md
 │   └── config.md
 ├── v2/                    # V2.0 设计文档
@@ -29,7 +29,7 @@ design/
 | 实现模块 | 读取文件 | 对应代码 |
 |----------|---------|---------|
 | 概述与架构 | `v1/overview-and-architecture.md` | 整体理解用 |
-| 硬件 MQTT Channel | `v1/mqtt-channel.md` | `channels/hardware.py` |
+| WebSocket 语音通道 | `v1/websocket-channel.md` | `channels/websocket_hw.py` |
 | ASR/TTS Provider | `v1/asr-tts.md` | `providers/asr.py`, `providers/tts.py` |
 | 配置扩展 | `v1/config.md` | `config/schema.py` |
 

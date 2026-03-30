@@ -38,17 +38,14 @@ V1.0 核心对话链路 (软件 MVP)
 
 | 模块 | 内容 | 优先级 |
 |------|------|--------|
-| 硬件 MQTT Channel | MQTT 双向语音通道，设备接入层，支持 Opus/PCM 音频帧 | P0 |
+| WebSocket 语音通道 | WebSocket 双向语音通道，设备接入层，支持 Opus/PCM 音频帧 | P0 |
 | ASR WebSocket 客户端 | 对接火山引擎 ASR 流式识别 API | P0 |
 | TTS WebSocket 客户端 | 对接火山引擎 TTS 流式合成 API | P0 |
-| MQTT Broker 部署 | Mosquitto（开发）/ EMQX（生产），统一 JWT Token 认证 | P0 |
-| 测试客户端 | 电脑端 MQTT 测试工具（Python CLI），模拟 ESP32 设备进行语音对话，支持麦克风录音/扬声器播放，遵循 §3.4 帧格式 | P0 |
+| 测试客户端 | WebSocket 测试工具（Python CLI），模拟客户端进行语音对话，支持麦克风录音/扬声器播放 | P0 |
 
 ### 技术栈新增
 
-- `aiomqtt` — MQTT 异步设备通信（新增，优先于同步 `paho-mqtt`）
-- `websockets`（已有）— 后端对接火山引擎 ASR/TTS 流式 API
-- Mosquitto / EMQX — MQTT Broker（新增），**统一使用 JWT Token 认证**（确保 Mosquitto→EMQX 迁移只需换 Broker 配置，不改业务代码）
+- `websockets`（已有）— WebSocket 语音通道 + 后端对接火山引擎 ASR/TTS 流式 API
 - 火山引擎 ASR WebSocket API — 语音识别（新增，V1 主选；ASRProvider 抽象层支持扩展，未来可接阿里等）
 - 火山引擎 TTS WebSocket API — 语音合成（新增，V1 主选；TTSProvider 抽象层支持扩展，未来可接阿里等）
 
@@ -58,11 +55,11 @@ M4 验收需满足端到端延迟指标，各分段预算如下：
 
 | 分段 | 目标延迟 | 说明 |
 |------|----------|------|
-| 设备 → MQTT Broker | < 50ms | 局域网/4G 传输 |
-| MQTT → ASR 识别完成 | < 500ms | 火山引擎流式 ASR |
+| 设备 → WebSocket 服务端 | < 50ms | 局域网/4G 传输 |
+| WebSocket → ASR 识别完成 | < 500ms | 火山引擎流式 ASR |
 | Agent LLM 首 token | < 800ms | 取决于 LLM 提供商 |
 | TTS 首字节音频生成 | < 300ms | 火山引擎流式 TTS |
-| TTS 音频 → MQTT → 设备 | < 50ms | 下行传输 |
+| TTS 音频 → WebSocket → 设备 | < 50ms | 下行传输 |
 | **合计首字节延迟** | **< 2s（验收基准）** | 理想目标 < 1.5s |
 | **完整回复延迟** | **< 5s（验收基准）** | 取决于回复长度 |
 
@@ -72,24 +69,23 @@ M4 验收需满足端到端延迟指标，各分段预算如下：
 
 | 里程碑 | 交付物 | 验收标准 |
 |--------|--------|----------|
-| M1 - 设计评审 | V1_DESIGN.md | 架构（MQTT+WebSocket双协议）、接口、数据模型评审通过 |
-| M2 - MQTT 通道 + 测试客户端 | 硬件 MQTT Channel + Broker 部署 + 电脑端测试客户端 | 电脑端测试客户端通过 MQTT 发送/接收音频帧，支持麦克风录音与扬声器播放；MQTT Broker JWT 认证可用 |
+| M1 - 设计评审 | V1_DESIGN.md | 架构（WebSocket 语音通道）、接口、数据模型评审通过 |
+| M2 - WebSocket 通道 + 测试客户端 | WebSocket Channel + 测试客户端 | 测试客户端通过 WebSocket 发送/接收音频帧，支持麦克风录音与扬声器播放 |
 | M3 - ASR/TTS | 火山引擎 ASR + TTS WebSocket 客户端 | 后端可通过 WebSocket 流式调用 ASR/TTS，ASR/TTS Provider 抽象层就绪 |
-| M4 - 全链路联调 | 全链路打通（单租户） | 电脑端测试客户端录音 → MQTT → ASR → Agent → TTS → MQTT → 扬声器播放语音回复；**全链路首字节延迟 < 2s，完整回复延迟 < 5s（测试环境基准）**；各分段延迟可独立监控 |
+| M4 - 全链路联调 | 全链路打通（单租户） | 测试客户端录音 → WebSocket → ASR → Agent → TTS → WebSocket → 扬声器播放语音回复；**全链路首字节延迟 < 2s，完整回复延迟 < 5s（测试环境基准）**；各分段延迟可独立监控 |
 
 ### 测试客户端说明
 
-电脑端 MQTT 测试客户端（`tools/hardware_test_client.py`）模拟 ESP32 硬件设备的行为：
+WebSocket 测试客户端（`tools/ws_test_client.py`）模拟客户端设备的行为：
 
-- **技术**：Python CLI 应用，基于 `aiomqtt` + `sounddevice`（或 `pyaudio`）
-- **协议兼容**：遵循 §3.4 MQTT 帧格式（4 字节 Header + Audio Data），与未来真实硬件完全一致
-- **能力**：麦克风录音（PCM 16kHz 16bit）→ Opus 编码（可选）→ MQTT 上行；MQTT 下行 → Opus 解码 → 扬声器播放
+- **技术**：Python CLI 应用，基于 `websockets` + `sounddevice`（或 `pyaudio`）
+- **协议兼容**：遵循 WebSocket 消息协议（JSON 控制消息 + 二进制音频帧），与真实客户端完全一致
+- **能力**：麦克风录音（PCM 16kHz 16bit）→ Opus 编码（可选）→ WebSocket 上行；WebSocket 下行 → Opus 解码 → 扬声器播放
 - **与真实硬件的差异**：无电池管理、无蓝牙配网、无 GPIO，仅验证音频通信和对话链路
 
 ### 依赖
 
 - nanobot 框架稳定运行
-- MQTT Broker（Mosquitto / EMQX）可用
 - 火山引擎 ASR/TTS WebSocket API 可用
 - ASR/TTS Provider 抽象层保留扩展性（ASR/TTS 未来可接阿里等厂商）
 
@@ -146,7 +142,7 @@ M4 验收需满足端到端延迟指标，各分段预算如下：
 | 模块 | 内容 | 优先级 |
 |------|------|--------|
 | 硬件方案选型 | ESP32 vs Linux 方案评估与确定 | P0 |
-| 嵌入式固件 | 语音采集、MQTT 通信、音频播放 | P0 |
+| 嵌入式固件 | 语音采集、WebSocket 通信、音频播放 | P0 |
 | 硬件通信适配 | WiFi/4G 双模联网，断线重连 | P0 |
 | 蓝牙配网 | 手机扫码配网（最小可用） | P0 |
 | OTA 空中升级 | A/B 双分区固件布局、安全 OTA 升级通道、固件签名验证、断点续传、失败自动回滚 | P0 |
@@ -175,13 +171,13 @@ M4 验收需满足端到端延迟指标，各分段预算如下：
 
 ### 依赖
 
-- **V1.0 完成**（核心对话链路就绪，硬件固件只需 MQTT + 音频采集/播放能力）
+- **V1.0 完成**（核心对话链路就绪，硬件固件只需 WebSocket + 音频采集/播放能力）
 - V2.0 的内容播放能力可在固件上叠加，不阻塞硬件启动
 - 硬件 ID 和供应商确定
 - 结构设计和模具
 - 硬件选型需保证 Flash ≥ 4MB（支持 A/B 双分区 OTA）
 
-> **说明**：V3 的核心依赖是 V1（MQTT 通道 + 对话链路），不需要等 V2 知识库完成。硬件选型（M1）和固件原型（M2）只需 MQTT 通信和音频采集/播放能力。V2 的内容播放指令可在 V3 固件就绪后叠加支持。
+> **说明**：V3 的核心依赖是 V1（WebSocket 通道 + 对话链路），不需要等 V2 知识库完成。硬件选型（M1）和固件原型（M2）只需 WebSocket 通信和音频采集/播放能力。V2 的内容播放指令可在 V3 固件就绪后叠加支持。
 
 ---
 
@@ -363,7 +359,7 @@ graph LR
     V5a --> V5b
     
     V1 --> |TTS抽象层| V4
-    V1 --> |MQTT通道+对话链路| V3
+    V1 --> |WebSocket通道+对话链路| V3
     V2 --> |内容播放叠加| V3
     V2 --> |知识库+内容| V4
     V3 --> |硬件设备管理| V5b
@@ -373,7 +369,7 @@ graph LR
 > **说明**：
 > - **V1（软件 MVP）完成后，V2、V3 可并行启动。**
 > - **V3.5（多租户 + 管理后台）在 V1 + V3 之后启动**，等软件和硬件都跑通 MVP 再补全运营基础，避免过早优化。
-> - **V3（硬件）在 V1 之后即可启动**，不需要等 V2 知识库。硬件固件只需 MQTT 通道和对话链路。
+> - **V3（硬件）在 V1 之后即可启动**，不需要等 V2 知识库。硬件固件只需 WebSocket 通道和对话链路。
 > - **V4（音色克隆）依赖 V2**，因为音色管理需要内容管理基础。
 > - V5a（管理增强）依赖 V3.5 + V2；V5b（规模化运营）等 V3+V3.5+V4+V5a 完成后再做。
 
@@ -382,18 +378,18 @@ graph LR
 | # | 风险 | 影响 | 应对策略 |
 |---|------|------|----------|
 | R1 | 火山引擎 ASR/TTS API 限制/变更 | V1 语音链路不可用 | ASR/TTS 抽象层支持扩展其他厂商（阿里等）；Provider 接口统一可快速切换 |
-| R2 | MQTT Broker 性能瓶颈 | 设备接入受限 | V1 用 Mosquitto 验证，生产切 EMQX 支撑百万连接；V1 即统一 JWT 认证，确保迁移零改动 |
-| R3 | 音频延迟过高（全链路 MQTT→ASR→Agent→TTS→MQTT） | 用户体验差 | 流式合成 + Opus 压缩；验收基准：首字节 < 2s，理想目标 < 1.5s；各分段独立监控（见延迟预算表） |
+| R2 | WebSocket 连接并发瓶颈 | 设备接入受限 | WebSocket 服务端支持配置 maxConnections 限流；未来可水平扩展多实例 + 负载均衡 |
+| R3 | 音频延迟过高（全链路 WebSocket→ASR→Agent→TTS→WebSocket） | 用户体验差 | 流式合成 + Opus 压缩；验收基准：首字节 < 2s，理想目标 < 1.5s；各分段独立监控（见延迟预算表） |
 | R4 | ChromaDB 性能瓶颈 | V2 知识库检索慢 | V2 实现 `VectorStoreProvider` 抽象层，ChromaDB 为默认实现，可切换 Milvus |
 | R5 | 硬件选型与供应链风险 | V3 延期 | V1-V2 用电脑端测试客户端验证全部软件功能，硬件设计可并行推进 |
 | R6 | 嵌入式开发周期长 | V3 延期 | 开发板先行验证，量产适配后置 |
 | R7 | OTA 升级失败导致设备变砖 | 设备不可用 | A/B 双分区 + 看门狗回滚机制，固件签名校验防篡改，升级前校验电量 ≥ 30% |
 | R8 | 音色克隆效果不佳 | V4 核心卖点受损 | 多厂商 API 对比（火山引擎/阿里 CosyVoice API 等）；TTSProvider 抽象层支持快速切换 |
-| R9 | MQTT 弱网场景音频丢帧 | 语音质量受损 | QoS 策略可调（0→1），端侧缓冲+插值补偿 |
+| R9 | 弱网场景音频丢帧 | 语音质量受损 | WebSocket 基于 TCP 保证可靠传输；端侧缓冲+插值补偿 |
 | R10 | SQLite 写锁并发瓶颈 | 多设备同时对话争抢锁 | V3.5 使用 `aiosqlite` 保持全异步；设计 Repository 抽象层，V5b 规模化时可迁移 PostgreSQL |
 | R11 | 云厂商音色克隆 API 定价/限制 | V4 运营成本过高或功能受限 | 多厂商对比评估（火山引擎/阿里等）；TTSProvider 抽象层支持切换；按量计费可控成本 |
 
 ---
 
 *文档维护人：项目团队*  
-*最后更新：2026-03-27*
+*最后更新：2026-03-30（WebSocket 统一通道，清理 MQTT 引用）*

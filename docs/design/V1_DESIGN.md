@@ -2,7 +2,12 @@
 
 > **版本**：V1.0 — 核心对话链路（MVP）  
 > **状态**：设计阶段  
-> **最后更新**：2026-03-27
+> **最后更新**：2026-03-30
+>
+> ⚠️ **架构变更说明**（2026-03-30）：V1 已统一使用 WebSocket 通道（参考 xiaozhi-esp32-server），
+> 原 §3 "硬件 MQTT Channel" 设计已废弃，代码已删除。当前实现为 `nanobot/channels/websocket_hw.py`，
+> 设计详见 `v1/websocket-channel.md` 和 `v1/overview-and-architecture.md`。
+> 本文档中的 MQTT 相关内容保留作为历史设计参考。
 
 ---
 

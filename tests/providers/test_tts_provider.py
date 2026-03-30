@@ -48,7 +48,7 @@ class TestVolcengineTTSProvider:
         request = provider._build_start_request(
             text="你好",
             voice="zh_female_cancan_mars_bigtts",
-            format="opus",
+            audio_format="opus",
             sample_rate=24000,
         )
         assert request["event"] == "start"
@@ -61,6 +61,17 @@ class TestVolcengineTTSProvider:
         assert request["data"]["speed_ratio"] == 1.0
         assert request["data"]["volume_ratio"] == 1.0
         assert request["data"]["pitch_ratio"] == 1.0
+
+    def test_build_start_request_pcm(self):
+        """测试 PCM 格式开始请求构建"""
+        provider = VolcengineTTSProvider(app_id="app123")
+        request = provider._build_start_request(
+            text="你好",
+            voice="zh_female_cancan_mars_bigtts",
+            audio_format="pcm",
+            sample_rate=16000,
+        )
+        assert request["data"]["encoding"] == "pcm"
 
     def test_preset_voices(self):
         """测试预置音色"""

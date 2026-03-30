@@ -1,6 +1,7 @@
 # V1 §8 配置设计
 
 > 摘自 `V1_DESIGN.md` §8，扩展 `nanobot/config/schema.py` 时参考。
+> **注意**：V1 已使用 WebSocket Channel 替代原 MQTT Channel。
 
 ## 8.1 config.json 扩展
 
@@ -9,16 +10,15 @@
   // ... 现有 nanobot 配置 ...
   
   "channels": {
-    "hardware": {
+    "websocket_hw": {
       "enabled": true,
-      "mqtt_host": "localhost",
-      "mqtt_port": 1883,
-      "mqtt_username": "minibot",
-      "mqtt_password": "xxx",
-      "mqtt_tls": false,
-      "audio_format": "opus",
-      "max_devices": 100,
-      "allow_from": ["*"]
+      "host": "0.0.0.0",
+      "port": 9000,
+      "authKey": "",
+      "maxConnections": 100,
+      "timeoutSeconds": 120,
+      "audioFormat": "opus",
+      "allowFrom": ["*"]
     }
   },
   
@@ -32,15 +32,15 @@
 在 `nanobot/config/schema.py` 中新增：
 
 ```python
-class HardwareChannelConfig(Base):
+class WebSocketChannelConfig(Base):
+    """WebSocket 语音通道配置 — 面向 Tauri/Web 客户端"""
     enabled: bool = False
-    mqtt_host: str = "localhost"
-    mqtt_port: int = 1883
-    mqtt_username: str = ""
-    mqtt_password: str = ""
-    mqtt_tls: bool = False
+    host: str = "0.0.0.0"
+    port: int = 9000
+    auth_key: str = ""
+    max_connections: int = 100
+    timeout_seconds: int = 120
     audio_format: str = "opus"
-    max_devices: int = 100
     allow_from: list[str] = ["*"]  # 设备白名单; "*" 允许所有; 生产环境改为具体设备 ID
 
 class ASRConfig(Base):

@@ -6,10 +6,10 @@ import pytest
 
 from nanobot.config.schema import (
     ASRConfig,
-    HardwareChannelConfig,
     TTSConfig,
     VolcengineASRConfig,
     VolcengineTTSConfig,
+    WebSocketChannelConfig,
 )
 
 
@@ -85,38 +85,37 @@ class TestTTSConfig:
         assert config.provider == "volcengine"
 
 
-class TestHardwareChannelConfig:
-    """Hardware Channel 配置测试"""
+class TestWebSocketChannelConfig:
+    """WebSocket Channel 配置测试"""
 
     def test_default_values(self):
         """测试默认值"""
-        config = HardwareChannelConfig()
+        config = WebSocketChannelConfig()
         assert config.enabled is False
-        assert config.mqtt_host == "localhost"
-        assert config.mqtt_port == 1883
-        assert config.mqtt_username == ""
-        assert config.mqtt_password == ""
-        assert config.mqtt_tls is False
+        assert config.host == "0.0.0.0"
+        assert config.port == 9000
+        assert config.auth_key == ""
+        assert config.max_connections == 100
+        assert config.timeout_seconds == 120
         assert config.audio_format == "opus"
-        assert config.max_devices == 100
         assert config.allow_from == ["*"]
 
     def test_camel_case_parsing(self):
         """测试 camelCase 解析"""
-        config = HardwareChannelConfig(**{
-            "mqttHost": "broker.example.com",
-            "mqttPort": 8883,
+        config = WebSocketChannelConfig(**{
+            "authKey": "my_secret",
+            "maxConnections": 50,
         })
-        assert config.mqtt_host == "broker.example.com"
-        assert config.mqtt_port == 8883
+        assert config.auth_key == "my_secret"
+        assert config.max_connections == 50
 
     def test_allow_from_all(self):
         """测试允许所有设备"""
-        config = HardwareChannelConfig(allow_from=["*"])
+        config = WebSocketChannelConfig(allow_from=["*"])
         assert config.allow_from == ["*"]
 
     def test_allow_from_specific(self):
         """测试允许特定设备"""
-        config = HardwareChannelConfig(allow_from=["device001", "device002"])
+        config = WebSocketChannelConfig(allow_from=["device001", "device002"])
         assert len(config.allow_from) == 2
         assert "device001" in config.allow_from

@@ -73,6 +73,6 @@ V1 MVP 页面：
 管理后台作为独立 FastAPI 服务运行，与 nanobot gateway 共享数据目录：
 
 ```bash
-nanobot gateway                        # 启动 nanobot + 硬件 MQTT Channel（端口 18790）
+nanobot gateway                        # 启动 nanobot + WebSocket Channel（端口 18790 + 9000）
 cd admin/backend && uvicorn main:app   # 启动管理后台（端口 8080）
 ```

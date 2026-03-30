@@ -1,6 +1,7 @@
 # V1 §1-2 概述与系统架构
 
 > 摘自 `V1_DESIGN.md` §1-§2，供 AI 开发时按需参考。
+> **注意**：V1 已统一使用 WebSocket 通道，原 MQTT Channel 设计已废弃（历史记录见 `DECISIONS.md`）。
 
 ## 1. 概述
 
@@ -18,12 +19,11 @@
 ### 1.3 V1 范围
 
 **包含（M1-M4）**：
-- 硬件 MQTT 双向语音通道（设备接入层）
+- **WebSocket 语音通道（面向 Tauri/Web 客户端，参考 xiaozhi-esp32-server 架构）**
 - 后端 WebSocket 客户端（对接火山引擎 ASR/TTS 流式 API）
 - TTS 语音合成（火山引擎 TTS WebSocket 流式）
 - STT 语音识别（火山引擎 ASR WebSocket 流式）
-- MQTT Broker 部署（Mosquitto）
-- 测试客户端（模拟硬件）
+- 测试客户端（WebSocket）
 
 > 其他版本的功能范围详见 `ROADMAP.md` 和对应版本设计目录（`v2/`、`v3.5/` 等）。
 
@@ -36,39 +36,36 @@
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           客户端层                                           │
-├──────────────┬──────────────────┬────────────────────────────────────────────┤
-│  ESP32 硬件   │  测试客户端        │  管理后台 (React)                          │
-│  (MQTT)      │  (MQTT)           │  (HTTP)                                   │
-└──────┬───────┴────────┬──────────┴──────────┬────────────────────────────────┘
-       │                │                     │
-       │  MQTT          │  MQTT               │  HTTP
-       ▼                ▼                     ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         MQTT Broker (EMQX / Mosquitto)                       │
-│  Topic: device/{id}/audio/up, device/{id}/audio/down, device/{id}/ctrl ...   │
-└──────────────────────────────────┬───────────────────────────────────────────┘
-                                   │
-                                   ▼
+├──────────────┬──────────────────┬──────────────┬───────────────────────────┤
+│  Tauri 桌面端 │  Web 测试客户端    │  ESP32 硬件   │  管理后台 (React)          │
+│  (WebSocket) │  (WebSocket)     │  (WebSocket)  │  (HTTP)                   │
+└──────┬───────┴────────┬─────────┴──────┬───────┴──────┬────────────────────┘
+       │                │                │              │
+       │  WebSocket     │  WebSocket     │  WebSocket   │  HTTP
+       ▼                ▼                ▼              ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         MiniBot 服务端                                        │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  硬件 MQTT Channel → ASR/TTS WebSocket → nanobot 核心                        │
+│  WebSocket Channel (:9000)                              │  nanobot 核心      │
+│  ← 所有客户端直连（Tauri/Web/ESP32）                      │  Agent + Bus      │
+├─────────────────────────────────────────────────────────┴─────────────────┤
+│  ASR Provider (火山引擎 WebSocket)  │  TTS Provider (火山引擎 WebSocket)       │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 双协议分工
+### 2.2 通道策略
 
-| 层面 | 协议 | 职责 | 优势 |
-|------|------|------|------|
-| 设备 ↔ 后端 | **MQTT** | 音频分片传输、设备状态上报、控制指令下发 | 轻量（2字节头）、低功耗、弱网 QoS 保证、断线自动重连、Topic 路由 |
-| 后端 ↔ 火山引擎 | **WebSocket** | ASR 音频流实时识别、TTS 文本流实时合成 | 全双工流式、高实时性、与火山引擎 API 天然匹配 |
+| 通道 | 协议 | 适用客户端 | 特点 |
+|------|------|-----------|------|
+| **WebSocket Channel** | WebSocket | Tauri 桌面端、Web 浏览器、ESP32（未来通过网关） | 无 Broker 依赖、直连、架构简洁 |
+| 后端 ↔ 火山引擎 | WebSocket | — | ASR/TTS 流式调用 |
+
+> WebSocket Channel 设计详见 `websocket-channel.md`。
 
 ### 2.3 与 nanobot 的集成方式
 
 | 扩展点 | 方式 | 说明 |
 |--------|------|------|
-| 硬件 Channel | `BaseChannel` 子类 | 注册到 `channels/registry.py`，通过 `config.json` 启用 |
-| MQTT 客户端 | `asyncio-mqtt` / `paho-mqtt` | Channel 内部实现，订阅/发布设备 Topic |
+| WebSocket Channel | `BaseChannel` 子类 | `channels/websocket_hw.py`，内嵌 WebSocket 服务器 |
 | ASR WebSocket | `websockets` 客户端 | Channel 内部实现，流式调用火山引擎 ASR |
-| TTS | 独立 Provider 模块 + WebSocket | 新增 `providers/tts.py`，内部通过 WebSocket 调用火山引擎 TTS |
-
+| TTS | 独立 Provider 模块 + WebSocket | `providers/tts.py`，内部通过 WebSocket 调用火山引擎 TTS |

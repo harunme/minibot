@@ -26,7 +26,7 @@ cursor.execute(f"SELECT * FROM devices WHERE id = '{device_id}'")
 
 ## 输入校验
 
-- 所有 MQTT payload 必须校验格式和长度
+- 所有 WebSocket 消息必须校验格式和长度
 - 所有 HTTP 请求参数必须校验类型和范围
 - 使用 Pydantic 模型做输入校验
 

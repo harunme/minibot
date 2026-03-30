@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
-import hmac
 import json
 import time
 from abc import ABC, abstractmethod
@@ -26,6 +24,7 @@ from typing import AsyncIterator
 
 import httpx
 import websockets
+from loguru import logger
 
 from nanobot.config.schema import TTSConfig, VolcengineTTSConfig
 
@@ -46,7 +45,7 @@ class TTSProvider(ABC):
         text: str,
         voice_id: str = "default",
         *,
-        format: str = "opus",
+        audio_format: str = "opus",
         sample_rate: int = 24000,
     ) -> AsyncIterator[bytes]:
         """将文本转为语音音频流（流式输出）
@@ -57,7 +56,7 @@ class TTSProvider(ABC):
         Args:
             text: 待合成的文本
             voice_id: 音色 ID
-            format: 输出格式（opus/pcm）
+            audio_format: 输出格式（opus/pcm）
             sample_rate: 采样率
 
         Yields:
@@ -127,7 +126,7 @@ class VolcengineTTSProvider(TTSProvider):
         text: str,
         voice_id: str = "default",
         *,
-        format: str = "opus",
+        audio_format: str = "opus",
         sample_rate: int = 24000,
     ) -> AsyncIterator[bytes]:
         """将文本转为语音音频流（流式输出）
@@ -144,21 +143,17 @@ class VolcengineTTSProvider(TTSProvider):
                 close_timeout=10,
             ) as ws:
                 # 发送开始请求
-                await ws.send(json.dumps(self._build_start_request(text, voice, format, sample_rate)))
+                await ws.send(json.dumps(self._build_start_request(text, voice, audio_format, sample_rate)))
 
                 # 接收响应头
                 try:
                     response = await asyncio.wait_for(ws.recv(), timeout=10.0)
                     data = json.loads(response)
                     if data.get("code") and data["code"] != 1000:
-                        import loguru
-
-                        loguru.logger.warning("TTS 错误: {} - {}", data.get("code"), data.get("message"))
+                        logger.warning("TTS 错误: {} - {}", data.get("code"), data.get("message"))
                         return
                 except asyncio.TimeoutError:
-                    import loguru
-
-                    loguru.logger.warning("TTS 响应超时")
+                    logger.warning("TTS 响应超时")
                     return
 
                 # 流式接收音频数据
@@ -171,15 +166,11 @@ class VolcengineTTSProvider(TTSProvider):
                         elif message == "" or message is None:
                             break
                     except asyncio.TimeoutError:
-                        import loguru
-
-                        loguru.logger.warning("TTS 接收超时")
+                        logger.warning("TTS 接收超时")
                         break
 
         except Exception as e:
-            import loguru
-
-            loguru.logger.warning("TTS 合成失败: {}", e)
+            logger.warning("TTS 合成失败: {}", e)
 
     async def list_voices(self) -> list[dict]:
         """列出可用音色"""
@@ -209,7 +200,7 @@ class VolcengineTTSProvider(TTSProvider):
         self,
         text: str,
         voice: str,
-        format: str,
+        audio_format: str,
         sample_rate: int,
     ) -> dict:
         """构建开始请求"""
@@ -220,7 +211,7 @@ class VolcengineTTSProvider(TTSProvider):
                 "cluster": self._cluster,
                 "voice": voice,
                 "text": text,
-                "encoding": "opus" if format == "opus" else "pcm",
+                "encoding": "opus" if audio_format == "opus" else "pcm",
                 "sample_rate": sample_rate,
                 "speed_ratio": 1.0,  # 语速
                 "volume_ratio": 1.0,  # 音量
@@ -253,9 +244,7 @@ class VolcengineTTSProvider(TTSProvider):
                 elif data.get("event") == "finished":
                     return None
         except (json.JSONDecodeError, ValueError) as e:
-            import loguru
-
-            loguru.logger.warning("TTS 消息解析失败: {}", e)
+            logger.warning("TTS 消息解析失败: {}", e)
 
         return None
 

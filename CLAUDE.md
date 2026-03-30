@@ -1,7 +1,7 @@
 # CLAUDE.md — AI 辅助开发约束文档
 
 > **适用范围**：本项目（MiniBot / nanobot-ai）所有 AI 辅助开发  
-> **最后更新**：2026-03-27  
+> **最后更新**：2026-03-30  
 > **优先级**：本文件中的规则优先于 `docs/` 下任何文档。如有冲突，以本文件为准。
 
 <!-- 
@@ -25,7 +25,7 @@
 | 里程碑 | 状态 | 说明 |
 |--------|------|------|
 | M1 - 设计评审 | ✅ 完成 | V1_DESIGN.md 已评审通过 |
-| M2 - MQTT 通道 | ✅ 完成 | Hardware MQTT Channel + Broker 部署 + 测试客户端 |
+| M2 - WebSocket 通道 | ✅ 完成 | WebSocket Channel（面向 Tauri/Web）+ 测试客户端 |
 | M3 - ASR/TTS | ✅ 完成 | 火山引擎 WebSocket 客户端（ASRProvider + TTSProvider） |
 | M4 - 对话链路 | ⏳ 未开始 | 全链路打通（单租户） |
 
@@ -47,12 +47,8 @@ ruff check nanobot/ tests/
 # 启动网关
 nanobot gateway
 
-# 启动 MQTT Broker（开发环境）
-brew install mosquitto && mosquitto -c deploy/mosquitto/mosquitto.conf
-# 或 Docker：docker run -d --name mosquitto -p 1883:1883 eclipse-mosquitto:2
-
-# 模拟硬件测试客户端
-python tools/hardware_test_client.py --device dev001 --token xxx --broker localhost
+# WebSocket 测试客户端
+python tools/ws_test_client.py --device dev001 --url ws://localhost:9000 --mic --play
 ```
 
 ---
@@ -101,7 +97,7 @@ python tools/hardware_test_client.py --device dev001 --token xxx --broker localh
 - **日志**：使用 `loguru.logger`，禁止 `print()` 和 `logging` 标准库
 - **数据类**：优先 `dataclass(slots=True)` 或 Pydantic `BaseModel`
 - **配置模型**：继承项目中的 `Base` 类（支持 camelCase/snake_case 双向兼容）
-- **命名**：模块 snake_case、类 PascalCase、常量 UPPER_SNAKE_CASE、MQTT Topic 小写/斜杠分隔
+- **命名**：模块 snake_case、类 PascalCase、常量 UPPER_SNAKE_CASE
 - **错误处理**：捕获具体异常，禁止裸 `except Exception`；外部 API 必须有重试和超时
 - **安全**：参数化查询（禁止拼接 SQL）、输入校验、密钥不硬编码
 - **依赖**：在 `pyproject.toml` 声明，必须有版本约束，优先复用已有依赖
@@ -117,9 +113,9 @@ python tools/hardware_test_client.py --device dev001 --token xxx --broker localh
 
 ## 5. V1 开发范围
 
-**里程碑**：M1 设计评审 → M2 MQTT 通道 → M3 ASR/TTS → M4 对话链路
+**里程碑**：M1 设计评审 → M2 WebSocket 通道 → M3 ASR/TTS → M4 对话链路
 
-**V1 包含**：硬件 MQTT Channel、火山引擎 ASR/TTS WebSocket 客户端（抽象层支持多厂商扩展）、MQTT Broker 部署、测试客户端（模拟 ESP32）。
+**V1 包含**：**WebSocket Channel（面向 Tauri/Web 客户端）**、火山引擎 ASR/TTS WebSocket 客户端（抽象层支持多厂商扩展）、测试客户端。
 
 **V1 不包含 ⚠️**：多租户（V3.5）、管理后台（V3.5）、Kids-Chat Skill（V2.0）、RAG 知识库（V2）、硬件固件（V3）、音色克隆（V4）、移动端 App（V5b）。
 
@@ -162,11 +158,9 @@ python tools/hardware_test_client.py --device dev001 --token xxx --broker localh
 
 ## 9. 常见陷阱
 
-- MQTT 测试时确保 Mosquitto 已启动（`brew services list | grep mosquitto`）
 - `pytest-asyncio` 需要 `asyncio_mode = "auto"`（已在 `pyproject.toml` 配置），否则异步测试会被静默跳过
 - `config/schema.py` 修改后运行 `pytest tests/test_config.py` 验证兼容性
 - 火山引擎 WebSocket API 有连接超时限制，测试中务必 Mock
-- MQTT Topic 必须全小写/斜杠分隔（如 `device/{id}/audio/up`），大写会导致订阅不匹配
 
 ---
 
@@ -178,8 +172,6 @@ python tools/hardware_test_client.py --device dev001 --token xxx --broker localh
 | `VOLC_ASR_TOKEN` | 火山引擎 ASR Token | `xxxxxx` |
 | `VOLC_TTS_APPID` | 火山引擎 TTS App ID | `xxxxxx` |
 | `VOLC_TTS_TOKEN` | 火山引擎 TTS Token | `xxxxxx` |
-| `MQTT_BROKER_HOST` | MQTT Broker 地址 | `localhost` |
-| `MQTT_BROKER_PORT` | MQTT Broker 端口 | `1883` |
 
 > 密钥也可放在 `config.json`（权限 0600），详见 `SECURITY.md`。
 
