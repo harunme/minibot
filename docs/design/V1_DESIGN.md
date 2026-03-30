@@ -1,13 +1,8 @@
 # MiniBot 语音伴侣 — V1.0 详细设计文档
 
 > **版本**：V1.0 — 核心对话链路（MVP）  
-> **状态**：设计阶段  
+> **状态**：实现中（M4 全链路已打通）  
 > **最后更新**：2026-03-30
->
-> ⚠️ **架构变更说明**（2026-03-30）：V1 已统一使用 WebSocket 通道（参考 xiaozhi-esp32-server），
-> 原 §3 "硬件 MQTT Channel" 设计已废弃，代码已删除。当前实现为 `nanobot/channels/websocket_hw.py`，
-> 设计详见 `v1/websocket-channel.md` 和 `v1/overview-and-architecture.md`。
-> 本文档中的 MQTT 相关内容保留作为历史设计参考。
 
 ---
 
@@ -15,8 +10,8 @@
 
 1. [概述](#1-概述)
 2. [系统架构](#2-系统架构)
-3. [硬件 MQTT Channel](#3-硬件-mqtt-channel)
-4. [ASR/TTS WebSocket 客户端](#4-asrtts-websocket-客户端)
+3. [WebSocket 语音通道](#3-websocket-语音通道)
+4. [ASR/TTS Provider](#4-asrtts-provider)
 5. [配置设计](#5-配置设计)
 6. [目录结构](#6-目录结构)
 7. [部署方案](#7-部署方案)
@@ -40,12 +35,12 @@
 ### 1.3 V1 范围
 
 **包含（M1-M4）**：
-- 硬件 MQTT 双向语音通道（设备接入层）
-- 后端 WebSocket 客户端（对接火山引擎 ASR/TTS 流式 API）
+- WebSocket 语音通道（面向 Tauri/Web 客户端，参考 xiaozhi-esp32-server 架构）
+- ASR 语音识别（火山引擎 ASR WebSocket 流式）
 - TTS 语音合成（火山引擎 TTS WebSocket 流式）
-- STT 语音识别（火山引擎 ASR WebSocket 流式）
-- MQTT Broker 部署（Mosquitto）
-- 测试客户端（模拟硬件）
+- 全链路对话管道（WebSocket → ASR → Agent → TTS → WebSocket）
+- 管道延迟埋点（M4 验收指标：首字节 <2s，完整回复 <5s）
+- 测试客户端（WebSocket CLI 工具）
 
 **不包含（详见 ROADMAP.md / DECISIONS.md）**：
 - 基础多租户（V3.5）
@@ -63,460 +58,269 @@
 ### 2.1 整体架构
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                     客户端层                           │
-├──────────────────┬───────────────────────────────────┤
-│  ESP32 硬件       │  测试客户端                        │
-│  (MQTT)          │  (MQTT)                           │
-└──────┬───────────┴────────┬──────────────────────────┘
-       │                    │
-       │  MQTT              │  MQTT
-       ▼                    ▼
-┌──────────────────────────────────────────────────────┐
-│           MQTT Broker (Mosquitto / EMQX)              │
-│  Topic: device/{id}/audio/up|down, ctrl/up|down ...   │
-└──────────────────────┬───────────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────────┐
-│                   MiniBot 服务端                       │
-├──────────────────────────────────────────────────────┤
-│                                                       │
-│  ┌─────────────────────────────────────────────────┐  │
-│  │          硬件 MQTT Channel                       │  │
-│  │  ┌────────────┐  ┌────────────┐  ┌────────────┐ │  │
-│  │  │ MQTT 订阅   │  │ 设备白名单  │  │ MQTT 发布   │ │  │
-│  │  │(音频/状态)  │  │ (allow_from)│  │(音频/指令)  │ │  │
-│  │  └─────┬──────┘  └────────────┘  └─────▲──────┘ │  │
-│  │        │                               │        │  │
-│  │        ▼                               │        │  │
-│  │  ┌────────────┐                 ┌────────────┐  │  │
-│  │  │ ASR 客户端  │                 │ TTS 客户端  │  │  │
-│  │  │(WebSocket) │                 │(WebSocket) │  │  │
-│  │  └─────┬──────┘                 └─────▲──────┘  │  │
-│  └────────┼──────────────────────────────┼─────────┘  │
-│           │                              │            │
-│           │  WebSocket                   │  WebSocket  │
-│           ▼                              │            │
-│  ┌────────────────────┐  ┌──────────────┴──────────┐  │
-│  │火山引擎 ASR         │  │火山引擎 TTS              │  │
-│  │音频流 → 文本        │  │文本 → 音频流             │  │
-│  └────────────────────┘  └─────────────────────────┘  │
-│                                                       │
-│  ┌─────────────────────────────────────────────────┐  │
-│  │             nanobot 核心 (复用)                    │  │
-│  │  ┌────────┐ ┌──────────┐ ┌────────┐ ┌────────┐ │  │
-│  │  │消息总线 │ │Agent Loop│ │Context │ │记忆系统 │ │  │
-│  │  │(Bus)   │ │(Loop)    │ │Builder │ │(Memory)│ │  │
-│  │  └────────┘ └──────────┘ └────────┘ └────────┘ │  │
-│  └─────────────────────────────────────────────────┘  │
-│                                                       │
-└──────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           客户端层                                           │
+├──────────────┬──────────────────┬──────────────┬───────────────────────────┤
+│  Tauri 桌面端 │  Web 测试客户端    │  ESP32 硬件   │  管理后台 (React)          │
+│  (WebSocket) │  (WebSocket)     │  (WebSocket)  │  (HTTP)                   │
+└──────┬───────┴────────┬─────────┴──────┬───────┴──────┬────────────────────┘
+       │                │                │              │
+       │  WebSocket     │  WebSocket     │  WebSocket   │  HTTP
+       ▼                ▼                ▼              ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         MiniBot 服务端                                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │           WebSocket Channel (:9000)                                   │  │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │  │
+│  │  │ 连接管理      │  │ 设备白名单    │  │ 会话管理      │               │  │
+│  │  │(WebSocket)   │  │ (allow_from) │  │(session_id)  │               │  │
+│  │  └──────┬───────┘  └──────────────┘  └──────▲───────┘               │  │
+│  │         │                                   │                        │  │
+│  │         ▼                                   │                        │  │
+│  │  ┌──────────────┐                   ┌──────────────┐                │  │
+│  │  │ ASR Provider  │                   │ TTS Provider  │                │  │
+│  │  │(WebSocket)   │                   │(WebSocket)   │                │  │
+│  │  └──────┬───────┘                   └──────▲───────┘                │  │
+│  └─────────┼──────────────────────────────────┼────────────────────────┘  │
+│            │                                  │                           │
+│            │  WebSocket                       │  WebSocket                │
+│            ▼                                  │                           │
+│  ┌─────────────────────┐  ┌───────────────────┴───────────┐              │
+│  │火山引擎 ASR           │  │火山引擎 TTS                    │              │
+│  │音频流 → 文本          │  │文本 → 音频流                   │              │
+│  └─────────────────────┘  └───────────────────────────────┘              │
+│                                                                           │
+│  ┌───────────────────────────────────────────────────────────────────────┐│
+│  │             nanobot 核心 (复用)                                         ││
+│  │  ┌────────┐ ┌──────────┐ ┌────────┐ ┌────────┐ ┌──────────────────┐ ││
+│  │  │消息总线 │ │Agent Loop│ │Context │ │记忆系统 │ │Channel Manager  │ ││
+│  │  │(Bus)   │ │(Loop)    │ │Builder │ │(Memory)│ │(路由 + 分发)     │ ││
+│  │  └────────┘ └──────────┘ └────────┘ └────────┘ └──────────────────┘ ││
+│  └───────────────────────────────────────────────────────────────────────┘│
+│                                                                           │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 2.2 数据流
 
 ```
-完整语音对话流程（双协议）：
+完整语音对话流程（M4 全链路）：
 
 上行链路（语音输入）：
-1. ESP32 硬件 →[MQTT: device/{id}/audio/up]→ MQTT Broker
-2. 硬件 MQTT Channel: 订阅 topic，接收音频分片，组装完整音频帧
-3. 硬件 MQTT Channel →[WebSocket]→ 火山引擎 ASR：流式发送音频，实时接收识别文本
-4. 识别完成：文本 → InboundMessage → nanobot 消息总线
+1. 客户端 WebSocket 连接 → hello 握手（device_id + token）
+2. 客户端 listen(start) → ConnectionHandler 开始监听
+3. 客户端发送二进制音频帧 → ConnectionHandler._asr_audio_queue
+4. ASR Provider 流式识别 → 实时发送 stt 中间结果给客户端
+5. ASR 最终结果 → BaseChannel._handle_message() → InboundMessage → 消息总线
 
 处理链路（Agent 思考）：
-5. Agent Loop: 消息总线 → Context Builder → LLM → 文本回复
+6. AgentLoop: bus.consume_inbound() → Context Builder → LLM → 文本回复
+7. AgentLoop: bus.publish_outbound(OutboundMessage)
 
 下行链路（语音输出）：
-6. 硬件 MQTT Channel: OutboundMessage → 文本
-7. 硬件 MQTT Channel →[WebSocket]→ 火山引擎 TTS：流式发送文本，实时接收合成音频
-8. 硬件 MQTT Channel →[MQTT: device/{id}/audio/down]→ MQTT Broker → ESP32 播放
+8. ChannelManager._dispatch_outbound() → WebSocketChannel.send(msg)
+9. ConnectionHandler.send_reply() → 发送 reply JSON（文本回复）
+10. TTS Provider 流式合成 → WebSocket 二进制音频帧 → 客户端播放
 
-设备管控：
-- 设备状态上报：ESP32 →[MQTT: device/{id}/status]→ 后端（在线/离线/电量/信号）
-- 控制指令下发：后端 →[MQTT: device/{id}/ctrl]→ ESP32（音量/唤醒词/OTA）
-- 遗嘱消息：设备异常断线 → MQTT Broker 自动发布 LWT → 后端感知设备离线
+延迟埋点（对应 M4 验收指标）：
+- t0: listen(start) 时刻
+- t1: ASR 首字（<500ms）
+- t2: ASR 完成
+- t3: Agent 回复到达 Channel（全链路首字节 <2s）
+- t4: TTS 首帧（<300ms from t3）
+- t5: TTS 完成（全链路 <5s）
 ```
 
-### 2.3 双协议分工
+### 2.3 协议策略
 
 | 层面 | 协议 | 职责 | 优势 |
 |------|------|------|------|
-| 设备 ↔ 后端 | **MQTT** | 音频分片传输、设备状态上报、控制指令下发 | 轻量（2字节头）、低功耗、弱网 QoS 保证、断线自动重连、Topic 路由 |
-| 后端 ↔ 火山引擎 | **WebSocket** | ASR 音频流实时识别、TTS 文本流实时合成 | 全双工流式、高实时性、与火山引擎 API 天然匹配 |
+| 客户端 ↔ 服务端 | **WebSocket** | 音频流传输、控制消息、状态管理 | 无 Broker 依赖、直连、全双工流式、架构简洁 |
+| 服务端 ↔ 火山引擎 | **WebSocket** | ASR 音频流实时识别、TTS 文本流实时合成 | 高实时性、与火山引擎 API 天然匹配 |
 
 ### 2.4 与 nanobot 的集成方式
 
 | 扩展点 | 方式 | 说明 |
 |--------|------|------|
-| 硬件 Channel | `BaseChannel` 子类 | 注册到 `channels/registry.py`，通过 `config.json` 启用 |
-| MQTT 客户端 | `asyncio-mqtt` / `paho-mqtt` | Channel 内部实现，订阅/发布设备 Topic |
-| ASR WebSocket | `websockets` 客户端 | Channel 内部实现，流式调用火山引擎 ASR |
-| TTS | 独立 Provider 模块 + WebSocket | 新增 `providers/tts.py`，内部通过 WebSocket 调用火山引擎 TTS |
+| WebSocket Channel | `BaseChannel` 子类 | `channels/websocket_hw.py`，内嵌 WebSocket 服务器 |
+| ASR Provider | `websockets` 客户端 | Channel 内部创建，流式调用火山引擎 ASR |
+| TTS Provider | 独立 Provider 模块 + WebSocket | `providers/tts.py`，内部通过 WebSocket 调用火山引擎 TTS |
+| 消息总线 | `MessageBus` 双队列 | `bus/queue.py`，解耦 Channel 与 AgentLoop |
+| 出站路由 | `ChannelManager` | `channels/manager.py`，消费 outbound 队列，路由到正确 Channel |
 
 ---
 
-## 3. 硬件 MQTT Channel
+## 3. WebSocket 语音通道
 
 ### 3.1 概述
 
-作为 nanobot Channel 插件实现，文件位置 `nanobot/channels/hardware.py`，继承 `BaseChannel`。内部集成 MQTT 客户端负责设备通信，以及 WebSocket 客户端负责对接火山引擎 ASR/TTS。
+WebSocket 语音通道面向 Tauri 桌面客户端和 Web 浏览器，客户端通过 WebSocket 直连服务端，无需中间件（Broker）。文件位置 `nanobot/channels/websocket_hw.py`，继承 `BaseChannel`。内部集成 ASR/TTS Provider 负责语音识别和合成。
 
-### 3.2 MQTT Broker
+> 详细协议规范：`docs/design/v1/websocket-channel.md`
 
-#### 选型建议
-
-| Broker | 特点 | 推荐场景 |
-|--------|------|----------|
-| **EMQX** | 功能强大，支持百万连接，规则引擎、认证插件丰富 | 生产环境、规模化部署 |
-| **Mosquitto** | 轻量，资源占用低，配置简单 | 开发环境、单机小规模 |
-
-V1 推荐 **Mosquitto** 快速启动开发，后续可无缝切换到 EMQX。
-
-#### MQTT 连接参数
+### 3.2 连接参数
 
 ```
-Broker: mqtt://{host}:1883 (TCP) 或 mqtts://{host}:8883 (TLS)
-Client ID: device_{device_id}
-Username: {device_id}
-Password: {auth_token}
-Clean Session: false (保持持久会话，断线重连后恢复订阅)
-Keep Alive: 60s
-LWT Topic: device/{device_id}/status
-LWT Payload: {"status": "offline", "timestamp": "..."}
-LWT QoS: 1
+URL: ws://{host}:{port}/
+默认端口: 9000
+认证: hello 消息中携带 device_id + token
+超时: 120 秒无活动自动断开
+最大连接数: 100（可配置）
 ```
 
-### 3.3 MQTT Topic 设计
+### 3.3 消息协议
 
-```
-device/{device_id}/
-├── audio/
-│   ├── up            # 上行音频帧 (设备 → 后端) [QoS 0]
-│   └── down          # 下行音频帧 (后端 → 设备) [QoS 0]
-├── ctrl/
-│   ├── up            # 上行控制消息 (设备 → 后端) [QoS 1]
-│   └── down          # 下行控制指令 (后端 → 设备) [QoS 1]
-├── status            # 设备状态上报 [QoS 1]
-└── ota/              # OTA 升级通道 (V4) [QoS 1]
-    ├── notify        # 后端通知有新版本
-    └── progress      # 设备上报升级进度
-```
+WebSocket 上传输两类数据：
+- **文本帧（JSON）**：控制消息，通过 `type` 字段路由
+- **二进制帧（bytes）**：音频数据（Opus/PCM）
 
-#### QoS 策略
+#### 客户端 → 服务端
 
-| Topic 类型 | QoS | 理由 |
-|-----------|-----|------|
-| audio/up, audio/down | **QoS 0** | 音频流追求低延迟，丢帧可接受（人耳对轻微丢帧不敏感） |
-| ctrl/up, ctrl/down | **QoS 1** | 控制指令必须送达（音量调节、播放控制等） |
-| status | **QoS 1** | 状态信息需要可靠传输 |
+| type | 说明 | 示例 |
+|------|------|------|
+| `hello` | 握手认证 | `{"type":"hello","device_id":"dev001","token":"xxx","audio_params":{"format":"opus","sample_rate":16000}}` |
+| `listen` | 语音监听控制 | `{"type":"listen","mode":"start"}` / `{"type":"listen","mode":"stop"}` |
+| `abort` | 中止当前 TTS | `{"type":"abort"}` |
+| `ping` | 心跳 | `{"type":"ping"}` |
+| *(binary)* | 音频帧 | 原始 Opus/PCM 音频数据 |
 
-### 3.4 MQTT 消息帧格式
+#### 服务端 → 客户端
 
-#### 控制消息（JSON，通过 ctrl Topic）
+| type | 说明 | 示例 |
+|------|------|------|
+| `hello` | 握手响应 | `{"type":"hello","session_id":"xxx","audio_params":{"format":"opus","sample_rate":24000}}` |
+| `stt` | ASR 识别结果 | `{"type":"stt","text":"给我讲个故事","is_final":true}` |
+| `tts` | TTS 状态 | `{"type":"tts","state":"start"}` / `{"type":"tts","state":"end"}` |
+| `reply` | Agent 文本回复 | `{"type":"reply","text":"好的，我给你讲一个..."}` |
+| `error` | 错误 | `{"type":"error","code":"auth_failed","message":"认证失败"}` |
+| `pong` | 心跳响应 | `{"type":"pong"}` |
+| *(binary)* | TTS 音频帧 | 合成的 Opus/PCM 音频数据 |
 
-```jsonc
-// 设备 → 后端：开始录音
-// Topic: device/{device_id}/ctrl/up
-{
-  "type": "audio_start",
-  "format": "opus",         // "opus" | "pcm"
-  "sample_rate": 16000,
-  "channels": 1,
-  "ts": 1711526400000       // 毫秒时间戳
-}
-
-// 设备 → 后端：结束录音
-// Topic: device/{device_id}/ctrl/up
-{
-  "type": "audio_end",
-  "ts": 1711526402000
-}
-
-// 后端 → 设备：开始回复语音
-// Topic: device/{device_id}/ctrl/down
-{
-  "type": "reply_start",
-  "format": "opus",
-  "sample_rate": 24000,
-  "channels": 1
-}
-
-// 后端 → 设备：回复语音结束
-// Topic: device/{device_id}/ctrl/down
-{
-  "type": "reply_end"
-}
-
-// 后端 → 设备：文本回复（可选，用于屏幕显示）
-// Topic: device/{device_id}/ctrl/down
-{
-  "type": "text",
-  "content": "好的，我给你讲个小熊的故事..."
-}
-
-// 后端 → 设备：错误
-// Topic: device/{device_id}/ctrl/down
-{
-  "type": "error",
-  "code": "auth_failed",     // "auth_failed" | "asr_error" | "tts_error" | "server_error"
-  "message": "设备未绑定"
-}
-
-// 设备 → 后端：播放控制
-// Topic: device/{device_id}/ctrl/up
-{
-  "type": "playback_control",
-  "action": "pause"          // "pause" | "resume" | "stop" | "next"
-}
-```
-
-#### 设备状态上报（JSON，通过 status Topic）
-
-```jsonc
-// Topic: device/{device_id}/status
-{
-  "status": "online",       // "online" | "offline" | "charging" | "low_battery"
-  "battery": 85,            // 电池百分比
-  "signal": -65,            // 信号强度 dBm（SIM 卡）
-  "wifi_rssi": -45,         // WiFi 信号强度
-  "firmware": "1.0.0",      // 固件版本
-  "uptime": 3600,           // 运行时长（秒）
-  "ts": 1711526400000
-}
-```
-
-#### 音频帧（二进制，通过 audio Topic）
-
-```
-上行音频帧（设备 → 后端）：
-Topic: device/{device_id}/audio/up
-Payload (binary):
-┌──────────┬──────────────────┐
-│ Header   │ Audio Data       │
-│ (4 bytes)│ (variable)       │
-├──────────┼──────────────────┤
-│ 0x01     │ Opus/PCM payload │
-│ seq (2B) │                  │
-│ flags(1B)│                  │
-└──────────┴──────────────────┘
-
-下行音频帧（后端 → 设备）：
-Topic: device/{device_id}/audio/down
-Payload (binary):
-┌──────────┬──────────────────┐
-│ Header   │ Audio Data       │
-│ (4 bytes)│ (variable)       │
-├──────────┼──────────────────┤
-│ 0x02     │ Opus/PCM payload │
-│ seq (2B) │                  │
-│ flags(1B)│                  │
-└──────────┴──────────────────┘
-
-Header 字段说明：
-- byte[0]: 帧类型标识 (0x01=上行, 0x02=下行)
-- byte[1-2]: 序列号 (uint16, big-endian)
-- byte[3]: 标志位 (bit0=最后一帧)
-```
-
-### 3.5 语音处理流程
-
-```python
-# 伪代码 — 硬件 MQTT Channel 核心流程
-
-class HardwareChannel(BaseChannel):
-    name = "hardware"
-    
-    async def start(self):
-        """启动 MQTT 客户端，订阅所有设备 Topic
-        
-        注意：aiomqtt 通过 async with (context manager) 管理连接生命周期，
-        不支持直接调用 disconnect()。使用 _running 标志 + asyncio.Event 控制退出。
-        """
-        self._running = True
-        self._stop_event = asyncio.Event()
-        
-        async with aiomqtt.Client(
-            hostname=self._mqtt_host,
-            port=self._mqtt_port,
-            username=self._mqtt_username,
-            password=self._mqtt_password,
-        ) as client:
-            self._mqtt_client = client
-            # 订阅所有设备的上行 Topic
-            await client.subscribe("device/+/audio/up", qos=0)
-            await client.subscribe("device/+/ctrl/up", qos=1)
-            await client.subscribe("device/+/status", qos=1)
-            
-            async for message in client.messages:
-                if not self._running:
-                    break
-                await self._dispatch_message(message)
-    
-    async def stop(self):
-        """停止 MQTT Channel
-        
-        通过设置 _running = False 使消息循环退出，
-        aiomqtt 的 context manager 会自动完成断开连接和资源清理。
-        """
-        self._running = False
-        self._stop_event.set()
-    
-    async def _dispatch_message(self, message):
-        """分发 MQTT 消息"""
-        topic_parts = str(message.topic).split("/")
-        # topic_parts: ["device", "{device_id}", "audio|ctrl|status", "up|down"]
-        device_id = topic_parts[1]
-        category = topic_parts[2]
-        
-        # 使用 BaseChannel.is_allowed() 进行设备白名单验证
-        if not self.is_allowed(device_id):
-            await self._publish_error(device_id, "auth_failed", "设备未授权")
-            return
-        
-        if category == "ctrl":
-            await self._handle_ctrl(device_id, json.loads(message.payload))
-        elif category == "audio":
-            await self._handle_audio(device_id, bytes(message.payload))
-        elif category == "status":
-            await self._handle_status(device_id, json.loads(message.payload))
-    
-    async def _handle_ctrl(self, device_id: str, frame: dict):
-        """处理控制消息"""
-        if frame["type"] == "audio_start":
-            self._audio_buffers[device_id] = bytearray()
-            
-        elif frame["type"] == "audio_end":
-            # 音频收集完毕，送入 ASR
-            audio_data = self._audio_buffers.pop(device_id, None)
-            if audio_data:
-                text = await self.asr_client.recognize(audio_data)
-                if text:
-                    await self._handle_message(
-                        sender_id=device_id,
-                        chat_id=device_id,
-                        content=text,
-                    )
-    
-    async def _handle_audio(self, device_id: str, payload: bytes):
-        """接收音频帧，追加到缓冲区"""
-        if device_id in self._audio_buffers:
-            self._audio_buffers[device_id].extend(payload[4:])  # 跳过 4 字节头
-    
-    async def send(self, msg: OutboundMessage):
-        """Agent 回复 → TTS → MQTT 音频下行"""
-        device_id = msg.chat_id
-        
-        # 1. 先发文本（可选）
-        await self.mqtt_client.publish(
-            f"device/{device_id}/ctrl/down",
-            json.dumps({"type": "text", "content": msg.content}),
-            qos=1,
-        )
-        
-        # 2. TTS 流式合成 + MQTT 音频下发
-        await self.mqtt_client.publish(
-            f"device/{device_id}/ctrl/down",
-            json.dumps({"type": "reply_start", "format": "opus", "sample_rate": 24000}),
-            qos=1,
-        )
-        
-        seq = 0
-        async for audio_chunk in self.tts_client.synthesize(msg.content, voice_id):
-            header = struct.pack(">BHB", 0x02, seq, 0x00)
-            await self.mqtt_client.publish(
-                f"device/{device_id}/audio/down",
-                header + audio_chunk,
-                qos=0,
-            )
-            seq += 1
-        
-        # 发送最后一帧标志
-        await self.mqtt_client.publish(
-            f"device/{device_id}/ctrl/down",
-            json.dumps({"type": "reply_end"}),
-            qos=1,
-        )
-```
-
-### 3.6 连接管理
+### 3.4 连接管理
 
 | 机制 | 说明 |
 |------|------|
-| 心跳 | MQTT Keep Alive = 60s，由协议层自动处理 |
-| 断线重连 | MQTT 客户端库原生支持，persistent session 恢复订阅 |
-| 遗嘱消息 | 设备异常断线 → Broker 自动发布 LWT 到 status Topic |
-| 设备认证 | MQTT Broker 层 username/password 认证 + Channel 层 device_id 验证 |
-| 并发管理 | 每设备一个 Client ID，Broker 自动踢掉旧连接 |
+| 心跳 | 客户端定期发送 `ping`，服务端回复 `pong`；超时 120s 无活动自动断开 |
+| 断线重连 | 客户端自行实现（WebSocket 标准无自动重连） |
+| 认证 | hello 消息中 `token` 验证 + `device_id` 白名单检查 |
+| 并发管理 | 每连接独立 `ConnectionHandler`，`max_connections` 限制总连接数 |
 
-### 3.7 nanobot 集成
+### 3.5 语音处理流程
+
+```
+客户端连接 → hello 握手
+              ↓
+客户端 listen(start) → 开始监听（记录 t0 时间戳）
+              ↓
+客户端二进制音频帧 → _asr_audio_queue
+              ↓
+ASR Provider 流式识别 → stt 中间结果 → 客户端
+              ↓ (最终结果)
+BaseChannel._handle_message() → InboundMessage → 消息总线
+              ↓
+AgentLoop → LLM 处理 → OutboundMessage → 消息总线
+              ↓
+ChannelManager → WebSocketChannel.send(msg)
+              ↓
+ConnectionHandler.send_reply():
+  1. 发送 reply JSON（文本回复）
+  2. 发送 tts(start) 通知
+  3. TTS Provider 流式合成 → 二进制音频帧 → 客户端播放
+  4. 发送 tts(end) 通知
+```
+
+### 3.6 核心实现
 
 ```python
-# nanobot/channels/hardware.py
+# nanobot/channels/websocket_hw.py（简化伪代码）
 
-class HardwareChannel(BaseChannel):
-    name = "hardware"
-    display_name = "Hardware (MQTT)"
-    
+class WebSocketHardwareChannel(BaseChannel):
+    name = "websocket_hw"
+    display_name = "WebSocket Hardware"
+
     def __init__(self, config: dict, bus: MessageBus):
         super().__init__(config, bus)
-        self._mqtt_host = config.get("mqtt_host", "localhost")
-        self._mqtt_port = config.get("mqtt_port", 1883)
-        self._mqtt_username = config.get("mqtt_username", "")
-        self._mqtt_password = config.get("mqtt_password", "")
-        self._audio_buffers: dict[str, bytearray] = {}
-        self._asr_client = None   # 火山引擎 ASR WebSocket 客户端
-        self._tts_client = None   # 火山引擎 TTS WebSocket 客户端
-        self._mqtt_client = None  # aiomqtt.Client（在 start() 的 context manager 内赋值）
-        self._stop_event = asyncio.Event()
-    
+        self._asr_provider = self._create_asr_provider()
+        self._tts_provider = self._create_tts_provider()
+        self._connections: dict[str, ConnectionHandler] = {}
+
     async def start(self) -> None:
-        """启动 MQTT 客户端，订阅设备 Topic
-        
-        注意：aiomqtt 使用 async with 管理连接生命周期，
-        stop() 通过 _running 标志使消息循环退出，context manager 自动断开连接。
-        """
-        # ... 见上方伪代码
-    
-    async def stop(self) -> None:
-        """停止 MQTT Channel
-        
-        设置 _running = False 使消息循环退出，
-        aiomqtt 的 async with context manager 会自动完成：
-        - 发送 DISCONNECT 包
-        - 关闭底层 TCP 连接
-        - 清理所有订阅
-        """
-        self._running = False
-        self._stop_event.set()
-    
+        """启动 WebSocket 服务器，监听客户端连接"""
+        async with websockets.serve(
+            self._handle_connection,
+            host=self._cfg("host", "0.0.0.0"),
+            port=self._cfg("port", 9000),
+        ):
+            await asyncio.Future()  # 永久运行
+
     async def send(self, msg: OutboundMessage) -> None:
-        """Agent 回复 → TTS → MQTT 音频推送"""
-        # ... 见上方伪代码
-    
-    @classmethod
-    def default_config(cls) -> dict:
-        return {
-            "enabled": False,
-            "mqtt_host": "localhost",
-            "mqtt_port": 1883,
-            "mqtt_username": "",
-            "mqtt_password": "",
-            "mqtt_tls": False,
-            "audio_format": "opus",
-            "max_devices": 100,
-            "allow_from": ["*"],  # "*" 允许所有设备; 生产环境应改为具体设备 ID 列表
-        }
+        """Agent 回复 → 查找设备连接 → 发送回复 + TTS 音频"""
+        handler = self._connections.get(msg.chat_id)
+        if handler:
+            await handler.send_reply(msg)
+
+
+class ConnectionHandler:
+    """每个 WebSocket 连接的处理器"""
+
+    async def _handle_hello(self, msg: dict) -> None:
+        """握手认证：验证 token + 设备白名单"""
+
+    async def _handle_listen(self, msg: dict) -> None:
+        """语音监听控制：start/stop"""
+        # start: 记录 t0 时间戳，清空队列，启动 ASR 任务
+        # stop: 发送结束标志到 ASR 队列
+
+    async def _run_asr(self) -> None:
+        """ASR 流式识别 + 管道延迟埋点
+        - 从 _asr_audio_queue 读取音频
+        - 流式送入 ASR Provider
+        - 实时发送 stt 中间结果
+        - 最终结果 → _handle_message() → 消息总线
+        """
+
+    async def send_reply(self, msg: OutboundMessage) -> None:
+        """发送回复 + TTS 流式音频 + 延迟埋点
+        - 发送 reply JSON
+        - TTS 流式合成 → 二进制音频帧
+        - 支持 abort 中止
+        """
+
+    async def _handle_abort(self, msg: dict) -> None:
+        """中止当前 TTS 播放"""
+
+    async def _handle_binary(self, data: bytes) -> None:
+        """接收客户端音频帧 → ASR 队列"""
+```
+
+### 3.7 认证流程
+
+```python
+# hello 消息认证
+if config.auth_key:
+    # 需要验证 token
+    if msg["token"] != config.auth_key:
+        send_error("auth_failed", "认证失败")
+        close()
+else:
+    # auth_key 为空则跳过认证（开发模式）
+    pass
+
+# 设备白名单验证（复用 BaseChannel.is_allowed()）
+if not is_allowed(device_id):
+    send_error("auth_failed", "设备未授权")
+    close()
 ```
 
 ---
 
-## 4. ASR/TTS WebSocket 客户端
+## 4. ASR/TTS Provider
 
 ### 4.1 概述
 
-后端内部通过 WebSocket 客户端连接火山引擎的 ASR（语音识别）和 TTS（语音合成）流式 API。这一层对上层 Channel 透明，Channel 只需调用 `asr_client.recognize()` 和 `tts_client.synthesize()`。
+后端通过独立的 ASR/TTS Provider 模块对接火山引擎的语音识别和语音合成流式 API（WebSocket）。这一层对上层 Channel 透明，Channel 只需调用 `asr_provider.recognize_stream()` 和 `tts_provider.synthesize()`。
 
 ### 4.2 ASR 客户端（火山引擎语音识别）
 
@@ -780,16 +584,15 @@ class VolcengineTTSProvider(TTSProvider):
   
   "channels": {
     // ... 现有渠道 ...
-    "hardware": {
+    "websocket_hw": {
       "enabled": true,
-      "mqtt_host": "localhost",          // MQTT Broker 地址
-      "mqtt_port": 1883,                 // MQTT Broker 端口
-      "mqtt_username": "minibot",        // MQTT 连接用户名
-      "mqtt_password": "xxx",            // MQTT 连接密码
-      "mqtt_tls": false,                 // 是否启用 TLS（生产环境建议 true）
-      "audio_format": "opus",            // 默认音频格式
-      "max_devices": 100,                // 最大同时在线设备数
-      "allow_from": ["*"]               // 设备白名单（"*" 允许所有设备; 生产环境改为具体设备 ID）
+      "host": "0.0.0.0",                // WebSocket 监听地址
+      "port": 9000,                      // WebSocket 监听端口
+      "authKey": "",                     // 认证密钥（空=跳过认证，开发模式）
+      "maxConnections": 100,             // 最大同时连接数
+      "timeoutSeconds": 120,             // 连接超时（秒）
+      "audioFormat": "opus",             // 默认音频格式
+      "allowFrom": ["*"]                // 设备白名单（"*" 允许所有; 生产环境改为具体设备 ID）
     }
   },
   
@@ -817,19 +620,18 @@ class VolcengineTTSProvider(TTSProvider):
 
 ### 5.2 Pydantic Schema 扩展
 
-在 `nanobot/config/schema.py` 中新增：
+在 `nanobot/config/schema.py` 中：
 
 ```python
-class HardwareChannelConfig(Base):
+class WebSocketChannelConfig(Base):
     enabled: bool = False
-    mqtt_host: str = "localhost"
-    mqtt_port: int = 1883
-    mqtt_username: str = ""
-    mqtt_password: str = ""
-    mqtt_tls: bool = False
+    host: str = "0.0.0.0"
+    port: int = 9000
+    auth_key: str = ""
+    max_connections: int = 100
+    timeout_seconds: int = 120
     audio_format: str = "opus"
-    max_devices: int = 100
-    allow_from: list[str] = ["*"]  # 设备白名单; "*" 允许所有; 生产环境改为具体设备 ID
+    allow_from: list[str] = ["*"]  # 设备白名单; "*" 允许所有
 
 class ASRConfig(Base):
     provider: str = "volcengine"
@@ -852,32 +654,47 @@ project-root/
 │   ├── ROADMAP.md                  # 版本路线图
 │   └── design/
 │       ├── CLAUDE.md               # 设计文档子目录规则
-│       └── V1_DESIGN.md           # 本文档
+│       ├── V1_DESIGN.md           # 本文档
+│       └── v1/
+│           ├── overview-and-architecture.md  # 概述与架构
+│           └── websocket-channel.md          # WebSocket 协议规范
 │
-├── nanobot/                        # nanobot 框架（扩展）
+├── nanobot/                        # nanobot 框架
 │   ├── channels/
-│   │   ├── hardware.py            # [NEW] 硬件 MQTT Channel
-│   │   └── ... (现有渠道)
+│   │   ├── base.py                # BaseChannel 抽象基类
+│   │   ├── manager.py             # ChannelManager（路由 + 分发）
+│   │   ├── registry.py            # 通道自动发现
+│   │   ├── websocket_hw.py        # WebSocket 语音通道（V1 核心）
+│   │   └── ... (其他渠道)
 │   ├── providers/
-│   │   ├── asr.py                 # [NEW] ASR Provider（火山引擎 WebSocket）
-│   │   ├── tts.py                 # [NEW] TTS Provider（火山引擎 WebSocket）
-│   │   └── ... (现有 Provider)
+│   │   ├── asr.py                 # ASR Provider（火山引擎 WebSocket）
+│   │   ├── tts.py                 # TTS Provider（火山引擎 WebSocket）
+│   │   └── ... (LLM Provider 等)
+│   ├── agent/
+│   │   ├── loop.py                # AgentLoop（消息处理引擎）
+│   │   ├── runner.py              # AgentRunner（LLM 迭代循环）
+│   │   └── context.py             # ContextBuilder（上下文组装）
+│   ├── bus/
+│   │   ├── queue.py               # MessageBus（双队列）
+│   │   └── events.py              # InboundMessage / OutboundMessage
+│   ├── session/
+│   │   └── manager.py             # SessionManager（JSONL 持久化）
 │   └── config/
-│       └── schema.py              # [MODIFY] 扩展配置
-│
-├── deploy/                         # [NEW] 部署配置
-│   └── mosquitto/
-│       └── mosquitto.conf         # MQTT Broker 配置
+│       ├── schema.py              # Pydantic 配置模型
+│       └── loader.py              # 配置加载 / 保存
 │
 ├── tests/                          # 测试
+│   ├── conftest.py                # 全局 fixtures（MessageBus 等）
 │   ├── channels/
-│   │   └── test_hardware_channel.py
+│   │   └── test_websocket_hw_channel.py  # WebSocket 通道单元测试（27个）
+│   ├── integration/
+│   │   └── test_conversation_pipeline.py # M4 全链路集成测试（11个）
 │   └── providers/
 │       ├── test_asr_provider.py
 │       └── test_tts_provider.py
 │
-└── tools/                          # [NEW] 开发工具
-    └── hardware_test_client.py     # MQTT 测试客户端（模拟 ESP32）
+└── tools/                          # 开发工具
+    └── ws_test_client.py           # WebSocket 测试客户端（模拟 Tauri/Web）
 ```
 
 ---
@@ -889,119 +706,66 @@ project-root/
 ```bash
 # 1. 安装 nanobot（开发模式）
 cd minibot
-pip install -e ".[dev]"
+uv sync            # 使用 uv 管理依赖
+# 或: pip install -e ".[dev]"
 
-# 2. 启动 MQTT Broker（Mosquitto）
-# macOS:
-brew install mosquitto
-mosquitto -c deploy/mosquitto/mosquitto.conf
-
-# 或使用 Docker:
-docker run -d --name mosquitto -p 1883:1883 -p 9001:9001 eclipse-mosquitto:2
-
-# 3. 配置
+# 2. 配置
 cp config.example.json ~/.minibot/config.json
-# 编辑配置：填入 LLM API Key、火山引擎 ASR/TTS AppId/Token、MQTT 信息
+# 编辑配置：填入 LLM API Key、火山引擎 ASR/TTS AppId/Token
+# 启用 WebSocket 通道：channels.websocket_hw.enabled = true
 
-# 4. 启动
-nanobot gateway                        # 启动 nanobot + 硬件 MQTT Channel
+# 3. 启动网关（WebSocket Channel + AgentLoop）
+nanobot gateway
 
-# 5. 测试
-python tools/hardware_test_client.py   # 模拟 ESP32 通过 MQTT 发送语音
+# 4. 测试（使用 WebSocket 测试客户端）
+python tools/ws_test_client.py   # 模拟 Tauri/Web 客户端通过 WebSocket 发送语音
 ```
 
 ### 7.2 Docker 部署
 
 ```yaml
-# docker-compose.yml (扩展)
+# docker-compose.yml
 services:
-  # MQTT Broker
-  mosquitto:
-    image: eclipse-mosquitto:2
-    ports:
-      - "1883:1883"     # MQTT TCP
-      - "8883:8883"     # MQTT TLS (生产环境)
-      - "9001:9001"     # MQTT WebSocket (调试用)
-    volumes:
-      - ./deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
-      - mosquitto-data:/mosquitto/data
-      - mosquitto-log:/mosquitto/log
-    restart: unless-stopped
-  
-  # MiniBot 网关（nanobot + 硬件 MQTT Channel）
+  # MiniBot 网关（nanobot + WebSocket Channel）
   minibot-gateway:
     build: .
     command: ["gateway"]
     ports:
+      - "9000:9000"     # WebSocket Channel
       - "18790:18790"   # nanobot gateway API
     volumes:
       - ~/.minibot:/root/.minibot
       - minibot-data:/root/.minibot/data
-    environment:
-      - MQTT_HOST=mosquitto
-      - MQTT_PORT=1883
-    depends_on:
-      - mosquitto
+    restart: unless-stopped
 
 volumes:
   minibot-data:
-  mosquitto-data:
-  mosquitto-log:
 ```
 
-### 7.3 Mosquitto 配置
-
-```conf
-# deploy/mosquitto/mosquitto.conf
-
-# 基础配置
-listener 1883
-protocol mqtt
-allow_anonymous false
-password_file /mosquitto/config/pwfile
-
-# WebSocket 监听（调试/Web 客户端使用）
-listener 9001
-protocol websockets
-
-# 持久化
-persistence true
-persistence_location /mosquitto/data/
-
-# 日志
-log_dest file /mosquitto/log/mosquitto.log
-log_type all
-
-# TLS (生产环境取消注释)
-# listener 8883
-# cafile /mosquitto/certs/ca.crt
-# certfile /mosquitto/certs/server.crt
-# keyfile /mosquitto/certs/server.key
-```
-
-### 7.4 生产环境
+### 7.3 生产环境
 
 | 组件 | 建议配置 |
 |------|----------|
 | 服务器 | 2C4G 起步（无 GPU） |
-| MQTT Broker | EMQX（生产）或 Mosquitto（小规模），端口 1883/8883(TLS) |
-| SSL | Let's Encrypt（MQTT TLS） |
-| 监控 | 日志：loguru → 文件轮转；MQTT：EMQX Dashboard；指标：Prometheus (可选) |
-| 备份 | Mosquitto 持久化数据定期备份 |
+| WebSocket | 端口 9000，建议通过 Nginx 反向代理 + TLS |
+| SSL | Let's Encrypt（Nginx TLS 终止） |
+| 监控 | 日志：loguru → 文件轮转；管道延迟：内置埋点；指标：Prometheus (可选) |
+| 备份 | 会话数据（JSONL）定期备份 |
 
-Nginx 配置示例（可选，用于 MQTT WebSocket 代理）：
+Nginx 反向代理配置（WebSocket）：
 
 ```nginx
-# MQTT over WebSocket（Web 调试客户端）
-location /mqtt {
-    proxy_pass http://127.0.0.1:9001;
+# WebSocket Channel 代理
+location /ws {
+    proxy_pass http://127.0.0.1:9000;
     proxy_http_version 1.1;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
-    proxy_read_timeout 3600s;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_read_timeout 120s;
+    proxy_send_timeout 120s;
 }
-
-# 注意：MQTT TCP 不走 Nginx，ESP32 直连 MQTT Broker（1883/8883 端口）
 ```
 
 ---
@@ -1010,36 +774,49 @@ location /mqtt {
 
 ### 8.1 单元测试
 
-| 模块 | 测试文件 | 覆盖内容 |
-|------|----------|----------|
-| 硬件 Channel | `test_hardware_channel.py` | MQTT 订阅/发布、音频帧解析、设备白名单验证、消息分发 |
-| ASR Provider | `test_asr_provider.py` | 火山引擎 WebSocket 连接、流式识别、错误处理、降级逻辑 |
-| TTS Provider | `test_tts_provider.py` | 火山引擎 WebSocket 合成、流式输出、错误处理、Provider 切换 |
+| 模块 | 测试文件 | 覆盖内容 | 数量 |
+|------|----------|----------|------|
+| WebSocket Channel | `test_websocket_hw_channel.py` | 连接握手、设备认证/白名单、消息路由、listen 控制、abort、send reply | 27 |
+| ASR Provider | `test_asr_provider.py` | 火山引擎 WebSocket 连接、流式识别、错误处理 | — |
+| TTS Provider | `test_tts_provider.py` | 火山引擎 WebSocket 合成、流式输出、错误处理 | — |
 
 ### 8.2 集成测试
 
+| 阶段 | 测试 | 验证内容 |
+|------|------|----------|
+| Stage 1 | ASR 产出 + Bus 发布 | 音频 → ASR 流式识别 → STT 消息 → InboundMessage 到达消息总线 |
+| Stage 2 | 出站路由 | OutboundMessage → Channel.send() → reply + TTS 音频 |
+| Stage 3 | **全链路** | hello → listen → 音频 → ASR → Bus → 模拟回复 → TTS → 客户端 |
+| Stage 4 | 优雅降级 | ASR 不可用 → 错误消息 / TTS 不可用 → 纯文本 |
+| Stage 5 | TTS 中止 | abort → 停止音频流 |
+| Stage 6 | 多连接 | 两设备独立收发 |
+| Stage 7 | **完整轮次** | 握手 → 监听 → ASR → Bus → Agent 回复 → TTS → 验证 |
+
+集成测试文件：`tests/integration/test_conversation_pipeline.py`（11 个测试，全部通过）
+
+### 8.3 端到端验证
+
 | 场景 | 步骤 | 期望结果 |
 |------|------|----------|
-| 端到端语音对话 | 测试客户端 MQTT 发语音 → 后端 ASR → Agent → TTS → MQTT 回音频 | 收到合成语音回复 |
-| 设备白名单验证 | 不在 allow_from 列表中的设备 MQTT 发消息 | 收到 auth_failed 错误，消息被拒绝 |
+| 端到端语音对话 | `ws_test_client.py` 录音 → WebSocket → 后端 ASR → Agent → TTS → 客户端播放 | 收到合成语音回复 |
+| 设备白名单验证 | 不在 allow_from 列表中的设备连接 WebSocket | 收到 auth_failed 错误，连接被关闭 |
 | TTS 降级 | 模拟火山引擎 TTS 失败 | 返回友好错误提示，日志记录异常 |
-| ASR 降级 | 发送空白/噪音音频 | 返回友好错误提示 |
-| MQTT 断线重连 | 模拟网络中断后恢复 | 设备自动重连，会话恢复 |
-| 遗嘱消息 | 模拟设备异常断线 | 后端收到 LWT，设备状态更新为 offline |
+| ASR 降级 | 发送空白/噪音音频 | 返回友好提示 |
+| 连接超时 | 客户端 120s 无活动 | 服务端自动断开连接 |
 
-### 8.3 测试客户端
+### 8.4 测试客户端
 
-`tools/hardware_test_client.py` — 基于 `paho-mqtt` 的命令行工具，模拟 ESP32 设备：
+`tools/ws_test_client.py` — 基于 `websockets` 的命令行工具，模拟 Tauri/Web 客户端：
 
 ```bash
-# 连接 MQTT Broker 并发送麦克风录音
-python tools/hardware_test_client.py --device dev001 --token xxx --broker localhost
+# 连接 WebSocket 并发送麦克风录音
+python tools/ws_test_client.py --device dev001 --token xxx --host localhost --port 9000
 
-# 发送预录音频文件
-python tools/hardware_test_client.py --device dev001 --file test.wav --broker localhost
-
-# 模拟设备状态上报
-python tools/hardware_test_client.py --device dev001 --status --battery 85
+# 交互命令
+# mic    — 开始/停止录音
+# abort  — 中止 TTS 播放
+# ping   — 发送心跳
+# quit   — 断开连接
 ```
 
 ---
@@ -1049,15 +826,17 @@ python tools/hardware_test_client.py --device dev001 --status --battery 85
 | 编号 | 问题 | 状态 | 备注 |
 |------|------|------|------|
 | Q1 | 火山引擎 ASR/TTS WebSocket API 具体接入方式和定价 | 待验证 | 需注册火山引擎获取 AppId/Token 实际测试 |
-| Q2 | MQTT Broker 选型：EMQX vs Mosquitto | ✅ 已决定 | V1 用 Mosquitto 快速开发，生产切 EMQX |
-| Q3 | MQTT QoS 级别：音频数据 QoS 0 vs QoS 1 | ✅ 已决定 | 音频流 QoS 0 优先低延迟，控制/状态 QoS 1 |
+| Q2 | ~~MQTT Broker 选型~~ | ✅ 已废弃 | V1 统一使用 WebSocket 直连，无需 Broker |
+| Q3 | ~~MQTT QoS 策略~~ | ✅ 已废弃 | WebSocket 基于 TCP，天然可靠传输 |
 | Q4 | 音频编解码库选择 | 待定 | opuslib（C 绑定）vs pyogg vs 纯 Python 方案 |
-| Q5 | MQTT payload 大小限制与音频分片策略 | 待测试 | Mosquitto 默认 max_packet_size 约 256MB，但建议单帧 ≤ 4KB |
-| Q6 | 设备 ID 生成方案 | 待定 | 硬件烧录 vs 首次配网时生成 |
+| Q5 | ~~MQTT payload 大小限制~~ | ✅ 已废弃 | WebSocket 无此限制 |
+| Q6 | 设备 ID 生成方案 | 待定 | 客户端生成 UUID / 用户绑定 |
 | Q7 | 唤醒词检测是否在端侧完成 | ✅ 已决定 | 推荐端侧，节省带宽和服务端算力 |
 | Q8 | ASR 多提供商扩展时机 | 待定 | V1 仅实现火山引擎；抽象层已预留，未来可扩展 |
+| Q9 | WebSocket 断线重连策略 | 待定 | 客户端实现指数退避重连 + 会话恢复 |
+| Q10 | 全链路延迟优化 | 进行中 | M4 埋点已就位，需实际联调验证 <2s 首字节目标 |
 
 ---
 
 *文档维护人：项目团队*  
-*最后更新：2026-03-27*
+*最后更新：2026-03-30*

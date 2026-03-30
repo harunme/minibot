@@ -76,6 +76,7 @@ class ConnectionHandler:
         self._asr_audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._listening: bool = False
         self._asr_task: asyncio.Task | None = None
+        self._listen_start_time: float = 0.0  # listen(start) 时刻，用于管道延迟埋点
 
         # TTS 中止标志
         self._tts_abort: bool = False
@@ -201,6 +202,7 @@ class ConnectionHandler:
                 logger.debug("[{}] 已在监听状态", self.session_id)
                 return
             self._listening = True
+            self._listen_start_time = time.monotonic()
             # 清空之前残留的队列数据
             while not self._asr_audio_queue.empty():
                 self._asr_audio_queue.get_nowait()
@@ -229,6 +231,11 @@ class ConnectionHandler:
 
         从音频队列读取数据，送入 ASR Provider 流式识别，
         将识别结果实时发送给客户端，最终结果发到消息总线。
+
+        延迟埋点：
+        - t0: listen(start) 收到时刻（由 _handle_listen 设置）
+        - t1: ASR 首次返回文本
+        - t2: ASR 最终结果，发布到消息总线
         """
         asr_provider = self._channel._asr_provider
         if not asr_provider:
@@ -236,6 +243,8 @@ class ConnectionHandler:
             return
 
         final_text = ""
+        t0 = self._listen_start_time or time.monotonic()
+        t_first_text = 0.0
         try:
             async def audio_stream() -> AsyncIterator[bytes]:
                 """从队列生成音频流"""
@@ -252,6 +261,13 @@ class ConnectionHandler:
                 sample_rate=16000,
             ):
                 if text:
+                    if not t_first_text:
+                        t_first_text = time.monotonic()
+                        logger.info(
+                            "[{}] ⏱ ASR 首字 {:.0f}ms",
+                            self.session_id,
+                            (t_first_text - t0) * 1000,
+                        )
                     final_text = text
                     await self._send_json({
                         "type": MessageType.STT,
@@ -261,19 +277,29 @@ class ConnectionHandler:
 
             # 发送最终结果
             if final_text:
+                t_asr_done = time.monotonic()
                 await self._send_json({
                     "type": MessageType.STT,
                     "text": final_text,
                     "is_final": True,
                 })
-                logger.info("[{}] ASR 结果: {}", self.session_id, final_text)
+                logger.info(
+                    "[{}] ⏱ ASR 完成 {:.0f}ms | 结果: {}",
+                    self.session_id,
+                    (t_asr_done - t0) * 1000,
+                    final_text,
+                )
 
                 # 发送到消息总线，触发 Agent 处理
                 await self._channel._handle_message(
                     sender_id=self.device_id or "",
                     chat_id=self.device_id or "",
                     content=final_text,
-                    metadata={"device_id": self.device_id, "session_id": self.session_id},
+                    metadata={
+                        "device_id": self.device_id,
+                        "session_id": self.session_id,
+                        "_pipeline_t0": t0,
+                    },
                 )
 
         except Exception as e:
@@ -285,11 +311,18 @@ class ConnectionHandler:
 
         1. 发送文本回复
         2. TTS 流式合成 + 下行音频
+
+        延迟埋点：
+        - t_reply: Agent 回复到达 Channel
+        - t_tts_first: TTS 首个音频帧发出
+        - t_tts_done: TTS 发送完成
         """
         if not self._ws.open:
             return
 
         self._tts_abort = False
+        t_reply = time.monotonic()
+        pipeline_t0 = msg.metadata.get("_pipeline_t0") if msg.metadata else None
 
         # 1. 发送文本回复
         if msg.content:
@@ -297,6 +330,13 @@ class ConnectionHandler:
                 "type": MessageType.REPLY,
                 "text": msg.content,
             })
+            if pipeline_t0:
+                logger.info(
+                    "[{}] ⏱ Agent→Reply {:.0f}ms (全链路 {:.0f}ms)",
+                    self.session_id,
+                    (t_reply - pipeline_t0) * 1000,
+                    (time.monotonic() - pipeline_t0) * 1000,
+                )
 
         # 2. TTS 流式合成
         tts_provider = self._channel._tts_provider
@@ -304,6 +344,7 @@ class ConnectionHandler:
             try:
                 await self._send_json({"type": MessageType.TTS, "state": "start"})
 
+                t_tts_first = 0.0
                 audio_stream = tts_provider.synthesize(msg.content)
                 async for audio_chunk in audio_stream:
                     if self._tts_abort:
@@ -311,10 +352,26 @@ class ConnectionHandler:
                         break
                     if not self._ws.open:
                         break
+                    if not t_tts_first:
+                        t_tts_first = time.monotonic()
+                        logger.info(
+                            "[{}] ⏱ TTS 首帧 {:.0f}ms",
+                            self.session_id,
+                            (t_tts_first - t_reply) * 1000,
+                        )
                     await self._ws.send(audio_chunk)
                     await asyncio.sleep(0.001)  # 控制发送速率
 
+                t_tts_done = time.monotonic()
                 await self._send_json({"type": MessageType.TTS, "state": "end"})
+
+                if pipeline_t0:
+                    logger.info(
+                        "[{}] ⏱ 全链路完成 {:.0f}ms (TTS {:.0f}ms)",
+                        self.session_id,
+                        (t_tts_done - pipeline_t0) * 1000,
+                        (t_tts_done - t_reply) * 1000,
+                    )
             except Exception as e:
                 logger.exception("[{}] TTS 合成失败: {}", self.session_id, e)
 
