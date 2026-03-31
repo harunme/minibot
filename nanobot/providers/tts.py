@@ -16,9 +16,7 @@ TTSProvider 抽象基类定义语音合成的标准接口，
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
-import time
 from abc import ABC, abstractmethod
 from typing import AsyncIterator
 
@@ -26,7 +24,7 @@ import httpx
 import websockets
 from loguru import logger
 
-from nanobot.config.schema import TTSConfig, VolcengineTTSConfig
+from nanobot.config.schema import TTSConfig
 
 
 # 火山引擎 TTS WebSocket API URL
@@ -132,6 +130,9 @@ class VolcengineTTSProvider(TTSProvider):
         """将文本转为语音音频流（流式输出）
 
         通过 WebSocket 连接火山引擎 TTS API，流式获取合成的音频。
+
+        注意：服务端会同时发送 JSON 消息（如错误、finished 事件）和 binary 音频帧，
+        需要在主循环中分别处理，不能混在一起。
         """
         voice = voice_id if voice_id != "default" else self._default_voice
 
@@ -139,6 +140,8 @@ class VolcengineTTSProvider(TTSProvider):
             async with websockets.connect(
                 self._ws_url,
                 additional_headers=self._get_headers(),
+                ping_interval=None,
+                ping_timeout=None,
                 open_timeout=10,
                 close_timeout=10,
             ) as ws:
@@ -148,14 +151,20 @@ class VolcengineTTSProvider(TTSProvider):
                 logger.debug("[TTS] 发送请求: {}", start_req)
                 await ws.send(json.dumps(start_req))
 
-                # 接收响应头
+                # 接收初始响应（JSON 格式）
                 try:
                     response = await asyncio.wait_for(ws.recv(), timeout=10.0)
-                    logger.info("[TTS] 收到响应头: {}", response[:200] if isinstance(response, str) else f"<binary {len(response)} bytes>")
-                    data = json.loads(response)
-                    if data.get("code") and data["code"] != 1000:
-                        logger.warning("TTS 错误: {} - {}", data.get("code"), data.get("message"))
-                        return
+                    logger.info("[TTS] 收到初始响应: {}", response[:200] if isinstance(response, str) else f"<binary {len(response)} bytes>")
+                    if isinstance(response, str):
+                        data = json.loads(response)
+                        code = data.get("code")
+                        if code and code != 1000:
+                            logger.warning("TTS 错误: {} - {}", code, data.get("message"))
+                            return
+                        # 成功则继续，不 return（继续收音频帧）
+                    else:
+                        # 意外收到 binary，跳过
+                        logger.debug("[TTS] 跳过意外 binary 帧: {} bytes", len(response))
                 except asyncio.TimeoutError:
                     logger.warning("TTS 响应超时")
                     return
@@ -165,23 +174,38 @@ class VolcengineTTSProvider(TTSProvider):
                 total_bytes = 0
                 while True:
                     try:
+                        # 关键：WebSocket 库根据帧类型自动返回 str 或 bytes
                         message = await asyncio.wait_for(ws.recv(), timeout=60.0)
-                        audio_data = self._parse_audio_message(message)
-                        if audio_data:
+
+                        # JSON 消息 → 非音频控制帧
+                        if isinstance(message, str):
+                            result = self._parse_json_message(message)
+                            if result == "finished":
+                                break
+                            elif result == "error":
+                                logger.warning("[TTS] 收到服务端错误，中止")
+                                break
+                            # 其他 JSON 消息（中间状态等）直接跳过
+                            continue
+
+                        # Binary 消息 → 音频数据
+                        audio_data = message
+                        if len(audio_data) > 0:
                             chunk_count += 1
                             total_bytes += len(audio_data)
                             if chunk_count == 1:
                                 logger.info("[TTS] 首帧: {} bytes, type={}, 前4字节hex={}",
                                     len(audio_data), type(audio_data).__name__, audio_data[:4].hex())
                             yield audio_data
-                        elif message == "" or message is None:
-                            break
+
                     except asyncio.TimeoutError:
                         logger.warning("TTS 接收超时")
                         break
 
                 logger.info("[TTS] 合成完成: 共 {} 帧, {} bytes", chunk_count, total_bytes)
 
+        except websockets.exceptions.ConnectionClosed as e:
+            logger.warning("TTS WebSocket 连接关闭: code={}, reason={}", e.code, e.reason)
         except Exception as e:
             logger.warning("TTS 合成失败: {}", e)
 
@@ -232,40 +256,51 @@ class VolcengineTTSProvider(TTSProvider):
             },
         }
 
-    def _parse_audio_message(self, message: str | bytes) -> bytes | None:
-        """解析音频消息
+    def _parse_json_message(self, message: str) -> str | None:
+        """解析 JSON 控制消息
 
         Args:
-            message: WebSocket 消息
+            message: WebSocket 文本帧（JSON 格式）
+
+        Returns:
+            "finished": 合成结束
+            "error": 服务端错误
+            None: 非音频/结束的中间消息，继续等待
+        """
+        try:
+            data = json.loads(message)
+            code = data.get("code")
+            event = data.get("event")
+
+            if code == 1000 or event == "started":
+                logger.debug("[TTS] 收到 started 事件: {}", data)
+                return None
+            elif event == "finished":
+                logger.info("[TTS] 收到 finished 事件: code={}", code)
+                return "finished"
+            elif code and code != 1000:
+                logger.warning("[TTS] 服务端错误: code={}, message={}", code, data.get("message"))
+                return "error"
+            else:
+                logger.debug("[TTS] 收到中间 JSON: {}", data)
+                return None
+        except json.JSONDecodeError as e:
+            logger.warning("[TTS] JSON 解析失败: {} | raw: {}", e, message[:100])
+            return None
+
+    def _parse_binary_audio(self, data: bytes) -> bytes | None:
+        """解析 binary 音频帧（仅当确定是音频数据时调用）
+
+        Args:
+            data: WebSocket binary 帧数据
 
         Returns:
             音频数据，失败返回 None
         """
-        try:
-            # 消息可能是二进制或 JSON
-            if isinstance(message, bytes):
-                # 二进制音频数据
-                logger.debug("[TTS] 收到二进制音频: {} bytes, 前4字节hex={}", len(message), message[:4].hex())
-                return message
-            else:
-                # JSON 格式
-                data = json.loads(message)
-                if data.get("code") == 1000:
-                    # Base64 编码的音频数据
-                    audio_b64 = data.get("data", {}).get("audio")
-                    if audio_b64:
-                        decoded = base64.b64decode(audio_b64)
-                        logger.debug("[TTS] Base64音频解码: {} bytes, 前4字节hex={}", len(decoded), decoded[:4].hex())
-                        return decoded
-                elif data.get("event") == "finished":
-                    logger.info("[TTS] 收到 finished 事件")
-                    return None
-                else:
-                    logger.debug("[TTS] 收到非音频JSON: {}", data)
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.warning("TTS 消息解析失败: {}", e)
-
-        return None
+        if len(data) == 0:
+            return None
+        logger.debug("[TTS] 收到 binary 音频: {} bytes, 前4字节hex={}", len(data), data[:4].hex())
+        return data
 
 
 # 工厂函数：基于配置创建 TTS Provider

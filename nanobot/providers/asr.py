@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import gzip
 import json
-import ssl
 import uuid
 from abc import ABC, abstractmethod
 from typing import AsyncIterator
@@ -88,13 +87,6 @@ class ASRProvider(ABC):
     async def is_available(self) -> bool:
         """检查服务可用性"""
         ...
-
-
-def _http1_context() -> ssl.SSLContext:
-    """创建强制 HTTP/1.1 的 SSL 上下文（解决火山引擎 ASR 不支持 HTTP/2 的问题）"""
-    ctx = ssl.create_default_context()
-    ctx.set_alpn_protocols(["http/1.1"])
-    return ctx
 
 
 class VolcengineASRProvider(ASRProvider):
@@ -334,7 +326,6 @@ class VolcengineASRProvider(ASRProvider):
             async with websockets.connect(
                 self._ws_url,
                 additional_headers=self._get_headers(connect_id),
-                ssl=_http1_context(),
                 ping_interval=None,
                 ping_timeout=None,
                 close_timeout=10,
@@ -383,10 +374,11 @@ class VolcengineASRProvider(ASRProvider):
                 # 接收识别结果
                 async for message in ws:
                     if isinstance(message, str):
-                        data = json.loads(message)
+                        # JSON 响应直接解析（格式：{code, event, ...}，无 payload_msg 包装）
+                        payload_msg = json.loads(message)
                     else:
-                        data = self._parse_response(message)
-                    payload_msg = data.get("payload_msg", {})
+                        # Binary 响应走协议解析（返回 {payload_msg: {...}}）
+                        payload_msg = self._parse_response(message).get("payload_msg", {})
                     status_code = payload_msg.get("code")
 
                     # 静默处理无有效语音错误码 1013
@@ -454,7 +446,6 @@ class VolcengineASRProvider(ASRProvider):
             async with websockets.connect(
                 self._ws_url,
                 additional_headers=self._get_headers(connect_id),
-                ssl=_http1_context(),
                 ping_interval=None,
                 ping_timeout=None,
                 close_timeout=10,
@@ -536,11 +527,11 @@ class VolcengineASRProvider(ASRProvider):
                     try:
                         async for message in ws:
                             if isinstance(message, str):
-                                data = json.loads(message)
+                                # JSON 响应直接解析（格式：{code, event, ...}，无 payload_msg 包装）
+                                payload_msg = json.loads(message)
                             else:
-                                data = self._parse_response(message)
-
-                            payload_msg = data.get("payload_msg", {})
+                                # Binary 响应走协议解析（返回 {payload_msg: {...}}）
+                                payload_msg = self._parse_response(message).get("payload_msg", {})
                             status_code = payload_msg.get("code")
 
                             if first:
