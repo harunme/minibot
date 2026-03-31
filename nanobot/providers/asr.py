@@ -275,6 +275,7 @@ class VolcengineASRProvider(ASRProvider):
         """
         queue: asyncio.Queue[str | None] = asyncio.Queue()
         done_event = asyncio.Event()
+        init_ok_event = asyncio.Event()
         connect_id = str(uuid.uuid4())
 
         logger.info("[ASR] 正在连接火山引擎 ASR WebSocket...")
@@ -295,17 +296,23 @@ class VolcengineASRProvider(ASRProvider):
 
                     直接从 audio_stream 读取，None 表示流结束。
                     发送完所有音频后发送 b'' 标识结束。
+
+                    关键改动：等待初始化响应成功后再发送音频，
+                    避免初始化期间无音频导致服务端断开连接。
                     """
                     sent_chunks = 0
                     total_bytes = 0
                     try:
-                        # 等麦克风稳定（1秒），让队列中积累真实音频再开始发送
-                        # 否则首块静音帧会导致火山引擎拒绝连接
-                        await asyncio.sleep(1.0)
+                        # 等待初始化响应成功（最多 10 秒），期间音频在 audio_stream 队列中缓冲
+                        try:
+                            await asyncio.wait_for(init_ok_event.wait(), timeout=10.0)
+                        except asyncio.TimeoutError:
+                            logger.warning("[ASR] 等待初始化响应超时，放弃发送")
+                            return
+                        logger.info("[ASR] 初始化成功，开始发送音频")
+
                         async for audio_chunk in audio_stream:
                             if audio_chunk is None:
-                                # 流结束信号：等待一秒内队列中的残留音频被消费，
-                                # 然后退出（sender 退出后，主循环会发送 b''）
                                 logger.info("[ASR] 收到流结束信号，已发送 {} 块, {} bytes", sent_chunks, total_bytes)
                                 break
                             sent_chunks += 1
@@ -331,14 +338,16 @@ class VolcengineASRProvider(ASRProvider):
                         done_event.set()
 
                 async def receiver() -> None:
-                    """从共享的 WebSocket 连接接收识别结果"""
+                    """从共享的 WebSocket 连接接收识别结果
+
+                    首条响应为初始化确认，通过 init_ok_event 通知 sender 开始发音频。
+                    """
                     first = True
                     try:
                         try:
                             async for message in ws:
                                 if isinstance(message, bytes):
                                     # 跳过二进制帧（如协议层面的 ack 或二进制响应）
-                                    # 如果长度较大，可能是服务端流式返回的音频参考数据
                                     if len(message) > 100:
                                         logger.debug("[ASR] 跳过大型二进制帧: {} bytes", len(message))
                                     continue
@@ -347,6 +356,13 @@ class VolcengineASRProvider(ASRProvider):
                                 if first:
                                     logger.info("[ASR] 收到首条响应: code={}", status_code)
                                     first = False
+                                    if status_code == 0:
+                                        # 初始化成功，通知 sender 开始发送音频
+                                        init_ok_event.set()
+                                    else:
+                                        logger.warning("[ASR] 初始化失败，code={}", status_code)
+                                        break
+                                    continue
                                 if status_code is None:
                                     continue
                                 if status_code != 0:
@@ -362,10 +378,11 @@ class VolcengineASRProvider(ASRProvider):
                                     break
                         except websockets.exceptions.ConnectionClosed as e:
                             logger.info("[ASR] WebSocket 关闭: {}", e)
-                            pass
                     except Exception as e:
                         logger.warning("ASR 接收错误: {}", e)
                     finally:
+                        # 确保 sender 不会永远等待（即使初始化失败也要唤醒）
+                        init_ok_event.set()
                         await queue.put(None)
 
                 sender_task = asyncio.create_task(sender())
