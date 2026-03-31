@@ -107,6 +107,7 @@ class VolcengineASRConfig(Base):
     app_key: str = ""
     access_key: str = ""
     language: str = "zh-CN"
+    enable_multilingual: bool = False
 
 
 class VolcengineTTSConfig(Base):
