@@ -170,6 +170,32 @@
     50% { box-shadow: 0 0 0 14px rgba(248,113,113,0); }
   }
 
+  /* --- Audio level meter --- */
+  #levelMeter {
+    width: 72px;
+    height: 8px;
+    background: var(--surface2);
+    border-radius: 4px;
+    overflow: hidden;
+    margin: 0 auto 4px;
+  }
+  #levelBar {
+    height: 100%;
+    width: 0%;
+    background: var(--green);
+    border-radius: 4px;
+    transition: width 0.05s;
+  }
+  #levelBar.active { background: var(--red); }
+
+  /* --- Chunk counter --- */
+  #chunkCount {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    text-align: center;
+    min-height: 1em;
+  }
+
   /* --- Controls bar --- */
   .controls {
     display: flex;
@@ -322,6 +348,8 @@
 
   <!-- 操作区 -->
   <div class="card">
+    <div id="levelMeter"><div id="levelBar"></div></div>
+    <div id="chunkCount"></div>
     <div class="controls">
       <div class="controls-side">
         <button id="btnAbort" class="btn-ghost" onclick="sendAbort()" disabled>
@@ -366,8 +394,14 @@ let mediaStream = null;
 let scriptProcessor = null;
 let playQueue = [];
 let playing = false;
+let chunkSentCount = 0;      // 已发送音频块计数
+let lastChunkTime = 0;       // 上次收到音频块的时间
 
-const SAMPLE_RATE = 16000;
+    // 录音采样率（与 ASR 期望一致）
+const REC_SAMPLE_RATE = 16000;
+// TTS 播放采样率（由服务端 hello 响应中的 audio_params.sample_rate 指定）
+let serverSampleRate = 24000;
+
 
 // ============================================================
 // DOM refs
@@ -383,6 +417,8 @@ const $log       = document.getElementById('log');
 const $dot       = document.getElementById('dot');
 const $status    = document.getElementById('statusText');
 const $convo     = document.getElementById('conversation');
+const $levelBar  = document.getElementById('levelBar');
+const $chunkCount= document.getElementById('chunkCount');
 
 // ============================================================
 // Logging
@@ -560,7 +596,7 @@ function sendHello() {
     token: $token.value.trim(),
     audio_params: {
       format: 'pcm',
-      sample_rate: SAMPLE_RATE,
+      sample_rate: 24000,
     }
   });
 }
@@ -595,6 +631,11 @@ function handleTextMessage(raw) {
   switch (t) {
     case 'hello':
       appendLog(`← 握手成功 session=${data.session_id || ''}`, 'log-recv');
+      // 更新 TTS 播放采样率（由服务端指定）
+      if (data.audio_params && data.audio_params.sample_rate) {
+        serverSampleRate = data.audio_params.sample_rate;
+        appendLog(`   音频参数: ${data.audio_params.format} ${serverSampleRate}Hz`, 'log-recv');
+      }
       setStatus('ok', `已认证 (${$deviceId.value})`);
       setControlsEnabled(true);
       break;
@@ -642,7 +683,10 @@ function handleTextMessage(raw) {
 
 function handleBinaryMessage(buffer) {
   const bytes = new Uint8Array(buffer);
-  appendLog(`← 收到音频 ${bytes.length} bytes`, 'log-recv');
+  // 音频格式检测：opus 固定头 "OggS"，PCM 无固定头
+  const isOpus = bytes.length >= 4 && bytes[0] === 0x4F && bytes[1] === 0x67 && bytes[2] === 0x67 && bytes[3] === 0x53;
+  const hint = isOpus ? ' [OPUS!]' : (bytes.length >= 4 ? ` [PCM? hex=${bytes[0].toString(16).padStart(2,'0')}]` : '');
+  appendLog(`← 音频 ${bytes.length} bytes${hint}`, 'log-recv');
   playQueue.push(buffer);
   if (!playing) playNextChunk();
 }
@@ -650,9 +694,10 @@ function handleBinaryMessage(buffer) {
 // ============================================================
 // Audio Playback (TTS)
 // ============================================================
+  // TTS 播放：sample_rate 由服务端 hello 响应指定
 async function ensureAudioContext() {
   if (!audioContext || audioContext.state === 'closed') {
-    audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+    audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: serverSampleRate });
   }
   if (audioContext.state === 'suspended') {
     await audioContext.resume();
@@ -669,13 +714,13 @@ async function playNextChunk() {
 
   const buffer = playQueue.shift();
   try {
-    // 尝试将二进制数据解释为 PCM 16-bit 有符号整数
+    // TTS 输出 PCM 24kHz 16bit，浏览器无法原生解码，需手动转 Float32
     const int16 = new Int16Array(buffer);
     const float32 = new Float32Array(int16.length);
     for (let i = 0; i < int16.length; i++) {
       float32[i] = int16[i] / 32768;
     }
-    const audioBuf = audioContext.createBuffer(1, float32.length, 24000);
+    const audioBuf = audioContext.createBuffer(1, float32.length, serverSampleRate);
     audioBuf.getChannelData(0).set(float32);
 
     const source = audioContext.createBufferSource();
@@ -700,7 +745,7 @@ async function startRecording() {
 
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: {
-        sampleRate: SAMPLE_RATE,
+        sampleRate: REC_SAMPLE_RATE,
         channelCount: 1,
         echoCancellation: true,
         noiseSuppression: true,
@@ -708,29 +753,69 @@ async function startRecording() {
     });
 
     // 创建录音上下文 (16kHz)
-    const recCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+    const recCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: REC_SAMPLE_RATE });
     const source = recCtx.createMediaStreamSource(mediaStream);
 
-    // ScriptProcessorNode (deprecated but widely supported)
-    // bufferSize = 4096 → ~256ms @ 16kHz
-    const processor = recCtx.createScriptProcessor(4096, 1, 1);
-    processor.onaudioprocess = (e) => {
-      if (!recording || !ws || ws.readyState !== WebSocket.OPEN) return;
-      const float32 = e.inputBuffer.getChannelData(0);
-      // 转为 PCM 16-bit
-      const int16 = new Int16Array(float32.length);
-      for (let i = 0; i < float32.length; i++) {
-        let s = Math.max(-1, Math.min(1, float32[i]));
-        int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    // AudioWorkletNode（现代 API，替代已废弃的 ScriptProcessorNode）
+    // 将 PCM 采集 + 16bit 转换下沉到 worklet 线程
+    const workletCode = `
+      class PcmCapture extends AudioWorkletProcessor {
+        process(inputs, outputs) {
+          const input = inputs[0];
+          if (!input || !input[0]) return true;
+          const float32 = input[0];
+          const int16 = new Int16Array(float32.length);
+          let sum = 0;
+          for (let i = 0; i < float32.length; i++) {
+            const s = Math.max(-1, Math.min(1, float32[i]));
+            int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+            sum += int16[i] * int16[i];
+          }
+          const rms = Math.sqrt(sum / int16.length);
+          // 转移 ArrayBuffer，发送后 worklet 侧原 buffer 变空（无害）
+          this.port.postMessage({ pcm: int16.buffer, rms }, [int16.buffer]);
+          return true;
+        }
       }
-      ws.send(int16.buffer);
+      registerProcessor('pcm-capture', PcmCapture);
+    `;
+    const blob = new Blob([workletCode], { type: 'application/javascript' });
+    const workletUrl = URL.createObjectURL(blob);
+    await recCtx.audioWorklet.addModule(workletUrl);
+    URL.revokeObjectURL(workletUrl);
+
+    const processorNode = new AudioWorkletNode(recCtx, 'pcm-capture');
+    processorNode.port.onmessage = (ev) => {
+      if (recording && ws && ws.readyState === WebSocket.OPEN) {
+        const { pcm, rms } = ev.data;
+
+        // 音量条
+        const pct = Math.min(100, (rms / 32768) * 300);
+        $levelBar.style.width = pct + '%';
+        $levelBar.classList.toggle('active', rms > 300);
+
+        // 发往服务端
+        ws.send(pcm);
+
+        chunkSentCount++;
+        const now = Date.now();
+        if (chunkSentCount === 1 || now - lastChunkTime > 1000) {
+          $chunkCount.textContent = chunkSentCount + ' ch | rms=' + Math.round(rms);
+          lastChunkTime = now;
+        }
+      }
     };
 
-    source.connect(processor);
-    processor.connect(recCtx.destination);
+    source.connect(processorNode);
+    // 数据通过 port.postMessage 发送到主线程，destination 连接仅满足 AudioWorklet 调度需要
+    processorNode.connect(recCtx.destination);
 
-    scriptProcessor = { processor, source, context: recCtx };
+    scriptProcessor = { processorNode, source, context: recCtx };
     recording = true;
+    chunkSentCount = 0;
+    lastChunkTime = 0;
+    $levelBar.style.width = '0%';
+    $chunkCount.textContent = '';
 
     sendListen('start');
 
@@ -750,7 +835,7 @@ function stopRecording() {
 
   if (scriptProcessor) {
     try {
-      scriptProcessor.processor.disconnect();
+      scriptProcessor.processorNode.disconnect();
       scriptProcessor.source.disconnect();
       scriptProcessor.context.close();
     } catch {}
@@ -762,7 +847,8 @@ function stopRecording() {
   }
 
   $btnMic.classList.remove('recording');
-  appendLog('🎙 停止录音', 'log-info');
+  $levelBar.style.width = '0%';
+  appendLog('🎙 停止录音 (共发送 ' + chunkSentCount + ' 块)', 'log-info');
 }
 
 function micDown() {

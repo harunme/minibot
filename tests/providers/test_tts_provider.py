@@ -38,7 +38,7 @@ class TestVolcengineTTSProvider:
         """测试请求头生成"""
         provider = VolcengineTTSProvider(app_id="app123", token="token456")
         headers = provider._get_headers()
-        assert headers["Authorization"] == "Bearer; token456"
+        assert headers["Authorization"] == "Bearer token456"
         assert headers["Content-Type"] == "application/json"
         assert headers["X-App-Id"] == "app123"
 

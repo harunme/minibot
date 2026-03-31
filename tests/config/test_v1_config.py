@@ -19,28 +19,26 @@ class TestVolcengineASRConfig:
     def test_default_values(self):
         """测试默认值"""
         config = VolcengineASRConfig()
-        assert config.app_id == ""
-        assert config.token == ""
-        assert config.cluster == "volcengine_streaming_common"
+        assert config.app_key == ""
+        assert config.access_key == ""
         assert config.language == "zh-CN"
 
     def test_camel_case_parsing(self):
         """测试 camelCase 解析"""
-        # Pydantic 的 alias_generator 支持 camelCase
         config = VolcengineASRConfig(
-            **{"appId": "app123", "token": "token456"}
+            **{"appKey": "key123", "accessKey": "secret456"}
         )
-        assert config.app_id == "app123"
-        assert config.token == "token456"
+        assert config.app_key == "key123"
+        assert config.access_key == "secret456"
 
     def test_snake_case_parsing(self):
         """测试 snake_case 解析"""
         config = VolcengineASRConfig(
-            app_id="app123",
-            token="token456",
+            app_key="key123",
+            access_key="secret456",
         )
-        assert config.app_id == "app123"
-        assert config.token == "token456"
+        assert config.app_key == "key123"
+        assert config.access_key == "secret456"
 
 
 class TestVolcengineTTSConfig:

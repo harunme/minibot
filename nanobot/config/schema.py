@@ -97,11 +97,15 @@ class HeartbeatConfig(Base):
 
 
 class VolcengineASRConfig(Base):
-    """火山引擎 ASR 配置（V1 ASRProvider 使用）"""
+    """火山引擎 ASR 配置（V1 ASRProvider 使用）
 
-    app_id: str = ""
-    token: str = ""
-    cluster: str = "volcengine_streaming_common"
+    认证参数（HTTP Header 方式）：
+        app_key: X-Api-App-Key（控制台获取）
+        access_key: X-Api-Access-Key（控制台获取）
+    """
+
+    app_key: str = ""
+    access_key: str = ""
     language: str = "zh-CN"
 
 
@@ -138,6 +142,7 @@ class WebSocketChannelConfig(Base):
     max_connections: int = 100
     timeout_seconds: int = 120  # 无活动超时（秒）
     audio_format: str = "opus"
+    tts_sample_rate: int = 24000  # TTS 输出采样率（与客户端 AudioContext 匹配）
     allow_from: list[str] = ["*"]
 
 

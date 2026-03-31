@@ -179,13 +179,14 @@ class ConnectionHandler:
         self._channel._register_connection(device_id, self)
 
         # 发送握手响应
-        audio_format = self._channel._cfg("audio_format", "opus")
+        audio_format = self._channel._cfg("audio_format", "pcm")
+        tts_sample_rate = self._channel._cfg("tts_sample_rate", 24000)
         await self._send_json({
             "type": MessageType.HELLO,
             "session_id": self.session_id,
             "audio_params": {
                 "format": audio_format,
-                "sample_rate": 24000,
+                "sample_rate": tts_sample_rate,
             },
         })
         logger.info("[{}] 设备 {} 认证成功", self.session_id, device_id)
@@ -292,6 +293,11 @@ class ConnectionHandler:
                 )
 
                 # 发送到消息总线，触发 Agent 处理
+                logger.info("[{}] ⏱ ASR 完成 {:.0f}ms | 结果: {} | 正在发布到消息总线",
+                    self.session_id,
+                    (t_asr_done - t0) * 1000,
+                    final_text,
+                )
                 await self._channel._handle_message(
                     sender_id=self.device_id or "",
                     chat_id=self.device_id or "",
@@ -302,6 +308,7 @@ class ConnectionHandler:
                         "_pipeline_t0": t0,
                     },
                 )
+                logger.info("[{}] 消息已发布到总线，等待 Agent 回复...", self.session_id)
 
         except Exception as e:
             logger.exception("[{}] ASR 流式识别失败: {}", self.session_id, e)
@@ -318,7 +325,11 @@ class ConnectionHandler:
         - t_tts_first: TTS 首个音频帧发出
         - t_tts_done: TTS 发送完成
         """
+        logger.info("[{}] send_reply 被调用: channel={}, chat_id={}, content={}",
+            self.session_id, msg.channel, msg.chat_id,
+            (msg.content or "")[:80])
         if self._ws.state != WsState.OPEN:
+            logger.warning("[{}] WebSocket 已关闭，跳过发送", self.session_id)
             return
 
         self._tts_abort = False
@@ -346,23 +357,35 @@ class ConnectionHandler:
                 await self._send_json({"type": MessageType.TTS, "state": "start"})
 
                 t_tts_first = 0.0
-                audio_stream = tts_provider.synthesize(msg.content)
+                audio_format = self._channel._cfg("audio_format", "pcm")
+                tts_sample_rate = self._channel._cfg("tts_sample_rate", 24000)
+                logger.info("[{}] TTS 开始合成: format={}, sample_rate={}", self.session_id, audio_format, tts_sample_rate)
+                audio_stream = tts_provider.synthesize(
+                    msg.content, audio_format=audio_format, sample_rate=tts_sample_rate
+                )
+                sent_chunks = 0
+                sent_bytes = 0
                 async for audio_chunk in audio_stream:
                     if self._tts_abort:
                         logger.info("[{}] TTS 被中止", self.session_id)
                         break
                     if self._ws.state != WsState.OPEN:
                         break
+                    sent_chunks += 1
+                    sent_bytes += len(audio_chunk)
                     if not t_tts_first:
                         t_tts_first = time.monotonic()
                         logger.info(
-                            "[{}] ⏱ TTS 首帧 {:.0f}ms",
+                            "[{}] ⏱ TTS 首帧 {:.0f}ms, chunk={} bytes, 前4字节hex={}",
                             self.session_id,
                             (t_tts_first - t_reply) * 1000,
+                            len(audio_chunk),
+                            audio_chunk[:4].hex(),
                         )
                     await self._ws.send(audio_chunk)
                     await asyncio.sleep(0.001)  # 控制发送速率
 
+                logger.info("[{}] TTS 发送完成: 共 {} 帧, {} bytes", self.session_id, sent_chunks, sent_bytes)
                 t_tts_done = time.monotonic()
                 await self._send_json({"type": MessageType.TTS, "state": "end"})
 
@@ -460,9 +483,12 @@ class WebSocketHardwareChannel(BaseChannel):
         """
         super().__init__(config, bus)
 
+        logger.info("WebSocketHardwareChannel.__init__ 开始，创建 ASR/TTS Provider...")
+
         # ASR/TTS Provider（Channel 内部自建）
         self._asr_provider = self._create_asr_provider()
         self._tts_provider = self._create_tts_provider()
+        logger.info("ASR Provider: {}, TTS Provider: {}", type(self._asr_provider).__name__ if self._asr_provider else 'None', type(self._tts_provider).__name__ if self._tts_provider else 'None')
 
         # 活跃连接映射（device_id -> ConnectionHandler）
         self._connections: dict[str, ConnectionHandler] = {}
@@ -503,7 +529,10 @@ class WebSocketHardwareChannel(BaseChannel):
             from nanobot.config.loader import load_config
             from nanobot.providers.asr import create_asr_provider
             config = load_config()
-            return create_asr_provider(config.asr)
+            logger.info("ASR config: provider={}, app_key={}", config.asr.provider, config.asr.volcengine.app_key)
+            provider = create_asr_provider(config.asr)
+            logger.info("ASR Provider 创建成功")
+            return provider
         except Exception as e:
             logger.warning("ASR Provider 创建失败: {}", e)
             return None
@@ -628,6 +657,7 @@ class WebSocketHardwareChannel(BaseChannel):
             "authKey": "",
             "maxConnections": 100,
             "timeoutSeconds": 120,
-            "audioFormat": "opus",
+            "ttsSampleRate": 24000,
+            "audioFormat": "pcm",
             "allowFrom": ["*"],
         }

@@ -16,50 +16,51 @@ class TestVolcengineASRProvider:
     def test_init(self):
         """测试初始化"""
         provider = VolcengineASRProvider(
-            app_id="test_app_id",
-            token="test_token",
-            cluster="volcengine_streaming_common",
+            app_key="test_app_key",
+            access_key="test_access_key",
             language="zh-CN",
         )
-        assert provider._app_id == "test_app_id"
-        assert provider._token == "test_token"
-        assert provider._cluster == "volcengine_streaming_common"
+        assert provider._app_key == "test_app_key"
+        assert provider._access_key == "test_access_key"
         assert provider._language == "zh-CN"
 
     def test_init_defaults(self):
         """测试默认值"""
         provider = VolcengineASRProvider()
-        assert provider._app_id == ""
-        assert provider._token == ""
-        assert provider._cluster == "volcengine_streaming_common"
+        assert provider._app_key == ""
+        assert provider._access_key == ""
         assert provider._language == "zh-CN"
 
     def test_get_headers(self):
-        """测试请求头生成"""
-        provider = VolcengineASRProvider(app_id="app123", token="token456")
-        headers = provider._get_headers()
-        assert headers["Authorization"] == "Bearer; token456"
-        assert headers["Content-Type"] == "application/json"
-        assert headers["X-App-Id"] == "app123"
+        """测试请求头生成（SAUC API 规范）"""
+        provider = VolcengineASRProvider(app_key="app123", access_key="key456")
+        headers = provider._get_headers("test-connect-id")
+        assert headers["X-Api-App-Key"] == "app123"
+        assert headers["X-Api-Access-Key"] == "key456"
+        assert headers["X-Api-Resource-Id"] == "volc.bigasr.sauc.duration"
+        assert headers["X-Api-Connect-Id"] == "test-connect-id"
 
-    def test_build_start_request(self):
-        """测试开始请求构建"""
-        provider = VolcengineASRProvider(app_id="app123")
-        request = provider._build_start_request("opus", 16000)
-        assert request["event"] == "start"
-        assert request["data"]["appid"] == "app123"
-        assert request["data"]["cluster"] == "volcengine_streaming_common"
-        assert request["data"]["language"] == "zh-CN"
-        assert request["data"]["audio_format"] == "opus"
-        assert request["data"]["sample_rate"] == 16000
-        assert request["data"]["enable_vad"] is True
-        assert request["data"]["enable_punctuation"] is True
+    def test_build_init_request(self):
+        """测试初始化请求构建（message_type=0）"""
+        provider = VolcengineASRProvider(app_key="app123")
+        request = provider._build_init_request(16000, "zh-CN")
+        assert request["header"]["message_type"] == 0
+        assert request["header"]["serialization"] == 1
+        assert request["header"]["compression"] == 0
+        assert request["payload"]["audio"]["format"] == "pcm"
+        assert request["payload"]["audio"]["sample_rate"] == 16000
+        assert request["payload"]["audio"]["channels"] == 1
+        assert request["payload"]["audio"]["bits"] == 16
+        assert request["payload"]["request"]["model_name"] == "bigmodel"
+        assert request["payload"]["request"]["enable_punctuation"] is True
+        assert request["payload"]["request"]["language"] == "zh-CN"
 
-    def test_build_start_request_pcm(self):
-        """测试 PCM 格式开始请求构建"""
-        provider = VolcengineASRProvider(app_id="app123")
-        request = provider._build_start_request("pcm", 16000)
-        assert request["data"]["audio_format"] == "pcm"
+    def test_build_init_request_pcm(self):
+        """测试 PCM 格式初始化请求"""
+        provider = VolcengineASRProvider(app_key="app123")
+        request = provider._build_init_request(16000, "en-US")
+        assert request["payload"]["audio"]["format"] == "pcm"
+        assert request["payload"]["request"]["language"] == "en-US"
 
     @pytest.mark.asyncio
     async def test_is_available_success(self):
@@ -95,21 +96,20 @@ class TestVolcengineASRProvider:
         # 模拟 WebSocket 连接失败
         with patch("nanobot.providers.asr.websockets.connect", new_callable=AsyncMock):
             result = await provider.recognize(b"fake_audio_data")
-            # 由于 WebSocket 连接会失败，应该返回 None
-            # 注意：实际实现可能返回 None 或空字符串
+            # WebSocket 连接会失败，应该返回 None
+            assert result is None
 
 
 class TestCreateASRProvider:
     """ASR Provider 工厂函数测试"""
 
     def test_create_volcengine_provider(self):
-        """测试创建火山引擎 Provider"""
+        """测试创建火山引擎 Provider（新字段）"""
         config = ASRConfig(
             provider="volcengine",
             volcengine=VolcengineASRConfig(
-                app_id="app123",
-                token="token456",
-                cluster="volcengine_streaming_common",
+                app_key="app_key_123",
+                access_key="access_key_456",
                 language="zh-CN",
             ),
         )
@@ -117,8 +117,8 @@ class TestCreateASRProvider:
         provider = create_asr_provider(config)
 
         assert isinstance(provider, VolcengineASRProvider)
-        assert provider._app_id == "app123"
-        assert provider._token == "token456"
+        assert provider._app_key == "app_key_123"
+        assert provider._access_key == "access_key_456"
 
     def test_create_unsupported_provider(self):
         """测试创建不支持的 Provider"""

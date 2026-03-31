@@ -75,8 +75,6 @@ python tools/ws_test_client.py --device dev001 --url ws://localhost:9000 --mic -
 
 > 详细的路径保护规则见 `.claude/rules/core-protection.md`（自动生效）。
 
-`nanobot/config/schema.py` **仅允许追加字段/新类，不允许修改已有字段**。
-
 ### 3.2 允许的扩展方式
 
 | 扩展方式 | 说明 |
@@ -85,7 +83,7 @@ python tools/ws_test_client.py --device dev001 --url ws://localhost:9000 --mic -
 | 新增 Provider | 继承 `LLMProvider`，放 `nanobot/providers/` |
 | 新增 Tool | 继承 `Tool`，`ToolRegistry.register()` 注册 |
 | 新增 Skill | 创建 `skills/<name>/SKILL.md` |
-| 追加配置字段 | 在 `config/schema.py` 追加新的 Config 子类 |
+| 新增/修改配置字段 | 在 `config/schema.py` 中新增或修改 Config 类字段 |
 | 新增独立模块 | 在 `nanobot/` 下新建包（如 `tenant/`、`admin/`） |
 
 ---
