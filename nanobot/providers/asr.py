@@ -139,6 +139,8 @@ class VolcengineASRProvider(ASRProvider):
         self._resource_id = VOLCEENGINE_ASR_RESOURCE_ID
         # Opus 解码器（用于 opus 格式音频输入）
         self._decoder = opuslib_next.Decoder(16000, 1)
+        # 追踪上一次日志文本，避免打印大量重复的中间结果
+        self._last_logged_text = ""
 
     async def recognize(
         self,
@@ -259,7 +261,11 @@ class VolcengineASRProvider(ASRProvider):
         try:
             json_data = res[12:].decode("utf-8")
             result = json.loads(json_data)
-            logger.debug("[ASR] 解析响应: {}", result)
+            # 只在文本内容变化时记录，避免刷屏（火山引擎每 8ms 返回一次）
+            current_text = result.get("result", {}).get("text", "")
+            if current_text != self._last_logged_text:
+                self._last_logged_text = current_text
+                logger.debug("[ASR] 解析响应: {}", result)
             return {"payload_msg": result}
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
             logger.error("[ASR] JSON 解析失败: {}", e)
