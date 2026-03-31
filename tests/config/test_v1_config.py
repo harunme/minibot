@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from nanobot.config.schema import (
     ASRConfig,
     TTSConfig,
@@ -47,8 +45,9 @@ class TestVolcengineTTSConfig:
     def test_default_values(self):
         """测试默认值"""
         config = VolcengineTTSConfig()
-        assert config.app_id == ""
+        assert config.appid == ""
         assert config.token == ""
+        assert config.authorization == "Bearer "
         assert config.cluster == "volcano_tts"
         assert config.default_voice == "zh_female_cancan_mars_bigtts"
 

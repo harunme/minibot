@@ -4,8 +4,8 @@ TTSProvider 抽象基类定义语音合成的标准接口，
 支持多提供商扩展（V1 实现火山引擎 TTS）。
 
 使用方式：
-    # 流式合成
-    provider = VolcengineTTSProvider(app_id="xxx", token="xxx")
+    # 流式合成（内部缓冲后逐块返回）
+    provider = VolcengineTTSProvider(appid="xxx", token="xxx")
     async for audio_chunk in provider.synthesize("你好"):
         play_audio(audio_chunk)
 
@@ -15,20 +15,19 @@ TTSProvider 抽象基类定义语音合成的标准接口，
 
 from __future__ import annotations
 
-import asyncio
+import base64
 import json
+import uuid
 from abc import ABC, abstractmethod
 from typing import AsyncIterator
 
 import httpx
-import websockets
 from loguru import logger
 
 from nanobot.config.schema import TTSConfig
 
-
-# 火山引擎 TTS WebSocket API URL
-VOLCEENGINE_TTS_WS_URL = "wss://openspeech.bytedance.com/api/v1/tts/ws_binary"
+# 火山引擎 TTS HTTP API URL（注意：不是 WebSocket，是 HTTPS POST）
+VOLCENGINE_TTS_API_URL = "https://openspeech.bytedance.com/api/v1/tts"
 
 
 class TTSProvider(ABC):
@@ -78,22 +77,31 @@ class TTSProvider(ABC):
 
 
 class VolcengineTTSProvider(TTSProvider):
-    """火山引擎 TTS WebSocket 流式合成实现（V1 主选）
+    """火山引擎 TTS HTTP POST 流式合成实现（V1 主选）
 
-    文档参考：
-    - 火山引擎 TTS API 文档
-    - docs/design/v1/asr-tts.md §4.3
+    参考 xiaozhi `core/providers/tts/doubao.py` 实现。
+
+    协议要点（对比错误的旧实现）：
+    - ❌ 旧实现用 WebSocket（wss://.../ws_binary）→ 1006 立即关闭
+    - ✅ 正确实现用 HTTPS POST（https://openspeech.bytedance.com/api/v1/tts）
+    - ❌ 旧实现用 event/data 格式 → 服务端不认识
+    - ✅ 正确实现用 app/audio/request 嵌套格式（与 ASR 一致）
+    - ❌ 旧实现 Authorization: Bearer {token} + X-App-Id
+    - ✅ 正确实现 Authorization: {authorization}{token}（两段拼接）
+    - ❌ 旧实现直接收 binary 帧
+    - ✅ 正确实现解析 JSON 响应，取 data 字段（base64 编码音频）
 
     预置音色：
     - zh_female_cancan_mars_bigtts - 灿灿
     - zh_male_shaoguoyang_mars_bigtts - 邵国防
-    - zh_female_tianmei_mars_bigtts -甜美
+    - zh_female_tianmei_mars_bigtts - 甜美
     """
 
     def __init__(
         self,
-        app_id: str | None = None,
+        appid: str | None = None,
         token: str | None = None,
+        authorization: str = "Bearer ",
         cluster: str = "volcano_tts",
         default_voice: str = "zh_female_cancan_mars_bigtts",
     ):
@@ -101,16 +109,18 @@ class VolcengineTTSProvider(TTSProvider):
         初始化火山引擎 TTS Provider。
 
         Args:
-            app_id: 火山引擎 App ID
-            token: 火山引擎 Token
+            appid: 火山引擎 App ID
+            token: 火山引擎 Token（authorization token 后半段）
+            authorization: Authorization 前缀，默认 "Bearer "
             cluster: TTS 集群
             default_voice: 默认音色 ID
         """
-        self._app_id = app_id or ""
+        self._appid = appid or ""
         self._token = token or ""
+        self._authorization = authorization
         self._cluster = cluster
         self._default_voice = default_voice
-        self._ws_url = VOLCEENGINE_TTS_WS_URL
+        self._api_url = VOLCENGINE_TTS_API_URL
 
         # 预置音色表
         self._preset_voices = [
@@ -124,90 +134,82 @@ class VolcengineTTSProvider(TTSProvider):
         text: str,
         voice_id: str = "default",
         *,
-        audio_format: str = "opus",
+        audio_format: str = "pcm",
         sample_rate: int = 24000,
+        speed_ratio: float = 1.0,
+        volume_ratio: float = 1.0,
+        pitch_ratio: float = 1.0,
     ) -> AsyncIterator[bytes]:
-        """将文本转为语音音频流（流式输出）
+        """将文本转为语音音频流
 
-        通过 WebSocket 连接火山引擎 TTS API，流式获取合成的音频。
+        通过 HTTPS POST 请求火山引擎 TTS API，收到完整音频后按固定大小分块 yield。
 
-        注意：服务端会同时发送 JSON 消息（如错误、finished 事件）和 binary 音频帧，
-        需要在主循环中分别处理，不能混在一起。
+        Args:
+            text: 待合成的文本
+            voice_id: 音色 ID
+            audio_format: 输出格式（pcm/wav）
+            sample_rate: 采样率
+            speed_ratio: 语速（0.1-3.0）
+            volume_ratio: 音量（0.1-3.0）
+            pitch_ratio: 音调（0.1-3.0）
+
+        Yields:
+            音频数据块（流式输出，每块 8192 bytes）
         """
         voice = voice_id if voice_id != "default" else self._default_voice
 
         try:
-            async with websockets.connect(
-                self._ws_url,
-                additional_headers=self._get_headers(),
-                ping_interval=None,
-                ping_timeout=None,
-                open_timeout=10,
-                close_timeout=10,
-            ) as ws:
-                logger.info("[TTS] WebSocket 连接成功，开始合成")
-                # 发送开始请求
-                start_req = self._build_start_request(text, voice, audio_format, sample_rate)
-                logger.debug("[TTS] 发送请求: {}", start_req)
-                await ws.send(json.dumps(start_req))
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                payload = self._build_request(text, voice, audio_format, speed_ratio, volume_ratio, pitch_ratio)
+                headers = self._get_headers()
+                logger.debug("[TTS] 发送请求: {}", json.dumps(payload, ensure_ascii=False))
+                response = await client.post(self._api_url, json=payload, headers=headers)
 
-                # 接收初始响应（JSON 格式）
-                try:
-                    response = await asyncio.wait_for(ws.recv(), timeout=10.0)
-                    logger.info("[TTS] 收到初始响应: {}", response[:200] if isinstance(response, str) else f"<binary {len(response)} bytes>")
-                    if isinstance(response, str):
-                        data = json.loads(response)
-                        code = data.get("code")
-                        if code and code != 1000:
-                            logger.warning("TTS 错误: {} - {}", code, data.get("message"))
-                            return
-                        # 成功则继续，不 return（继续收音频帧）
-                    else:
-                        # 意外收到 binary，跳过
-                        logger.debug("[TTS] 跳过意外 binary 帧: {} bytes", len(response))
-                except asyncio.TimeoutError:
-                    logger.warning("TTS 响应超时")
+                if response.status_code != 200:
+                    # 401 时打印 Authorization header 供调试（隐藏完整 token）
+                    auth_hint = headers.get("Authorization", "")
+                    if auth_hint and len(auth_hint) > 20:
+                        auth_hint = auth_hint[:20] + "..."
+                    logger.warning(
+                        "[TTS] HTTP 错误: status={}, body={} | Authorization: {}",
+                        response.status_code,
+                        response.text[:200],
+                        auth_hint,
+                    )
                     return
 
-                # 流式接收音频数据
-                chunk_count = 0
-                total_bytes = 0
-                while True:
-                    try:
-                        # 关键：WebSocket 库根据帧类型自动返回 str 或 bytes
-                        message = await asyncio.wait_for(ws.recv(), timeout=60.0)
+                resp_data = response.json()
+                code = resp_data.get("code")
+                logger.debug("[TTS] 响应: {}", resp_data)
+                # code=1000 或 code=3000 均表示成功（不同集群格式）
+                if code and code not in (1000, 3000):
+                    logger.warning("[TTS] 服务端错误: code={}, message={}", code, resp_data.get("message"))
+                    return
 
-                        # JSON 消息 → 非音频控制帧
-                        if isinstance(message, str):
-                            result = self._parse_json_message(message)
-                            if result == "finished":
-                                break
-                            elif result == "error":
-                                logger.warning("[TTS] 收到服务端错误，中止")
-                                break
-                            # 其他 JSON 消息（中间状态等）直接跳过
-                            continue
+                # 音频数据可能在 data 或 data.audio 等不同字段，尝试多路径获取
+                data_field = resp_data.get("data") or resp_data.get("data", {}).get("audio") or resp_data.get("data", {}).get("result")
+                if isinstance(data_field, str) and data_field:
+                    b64_audio = data_field
+                elif isinstance(data_field, dict):
+                    b64_audio = data_field.get("audio") or data_field.get("result") or ""
+                else:
+                    b64_audio = ""
+                if not b64_audio:
+                    logger.warning("[TTS] 响应中无 audio 数据")
+                    return
 
-                        # Binary 消息 → 音频数据
-                        audio_data = message
-                        if len(audio_data) > 0:
-                            chunk_count += 1
-                            total_bytes += len(audio_data)
-                            if chunk_count == 1:
-                                logger.info("[TTS] 首帧: {} bytes, type={}, 前4字节hex={}",
-                                    len(audio_data), type(audio_data).__name__, audio_data[:4].hex())
-                            yield audio_data
+                audio_bytes = base64.b64decode(b64_audio)
+                logger.info("[TTS] 合成完成: {} bytes, 前4字节hex={}", len(audio_bytes), audio_bytes[:4].hex())
 
-                    except asyncio.TimeoutError:
-                        logger.warning("TTS 接收超时")
-                        break
+                # 按固定大小分块 yield，模拟流式输出
+                chunk_size = 8192
+                for i in range(0, len(audio_bytes), chunk_size):
+                    yield audio_bytes[i : i + chunk_size]
 
-                logger.info("[TTS] 合成完成: 共 {} 帧, {} bytes", chunk_count, total_bytes)
-
-        except websockets.exceptions.ConnectionClosed as e:
-            logger.warning("TTS WebSocket 连接关闭: code={}, reason={}", e.code, e.reason)
+        except httpx.TimeoutException:
+            logger.warning("[TTS] 请求超时")
         except Exception as e:
-            logger.warning("TTS 合成失败: {}", e)
+            logger.warning("[TTS] 合成失败: {}", e)
 
     async def list_voices(self) -> list[dict]:
         """列出可用音色"""
@@ -226,81 +228,51 @@ class VolcengineTTSProvider(TTSProvider):
             return False
 
     def _get_headers(self) -> dict[str, str]:
-        """获取 WebSocket 请求头"""
+        """获取 HTTP 请求头（按 xiaozhi doubao.py 格式）
+
+        Authorization 格式：{authorization}{token}（两段拼接，如 "Bearer " + token）
+        """
         return {
-            "Authorization": f"Bearer {self._token}",
+            "Authorization": f"{self._authorization}{self._token}",
             "Content-Type": "application/json",
-            "X-App-Id": self._app_id,
         }
 
-    def _build_start_request(
+    def _build_request(
         self,
         text: str,
         voice: str,
         audio_format: str,
-        sample_rate: int,
+        speed_ratio: float,
+        volume_ratio: float,
+        pitch_ratio: float,
     ) -> dict:
-        """构建开始请求"""
+        """构建请求体（按 xiaozhi doubao.py 格式）
+
+        使用 app/audio/request 嵌套结构，与 ASR 协议格式一致。
+        """
         return {
-            "event": "start",
-            "data": {
-                "appid": self._app_id,
+            "app": {
+                "appid": self._appid,
+                "token": self._token,
                 "cluster": self._cluster,
-                "voice": voice,
+            },
+            "user": {"uid": "1"},
+            "audio": {
+                "voice_type": voice,
+                "encoding": audio_format,
+                "speed_ratio": speed_ratio,
+                "volume_ratio": volume_ratio,
+                "pitch_ratio": pitch_ratio,
+            },
+            "request": {
+                "reqid": str(uuid.uuid4()),
                 "text": text,
-                "encoding": "opus" if audio_format == "opus" else "pcm",
-                "sample_rate": sample_rate,
-                "speed_ratio": 1.0,  # 语速
-                "volume_ratio": 1.0,  # 音量
-                "pitch_ratio": 1.0,  # 音调
+                "text_type": "plain",
+                "operation": "query",
+                "with_frontend": 1,
+                "frontend_type": "unitTson",
             },
         }
-
-    def _parse_json_message(self, message: str) -> str | None:
-        """解析 JSON 控制消息
-
-        Args:
-            message: WebSocket 文本帧（JSON 格式）
-
-        Returns:
-            "finished": 合成结束
-            "error": 服务端错误
-            None: 非音频/结束的中间消息，继续等待
-        """
-        try:
-            data = json.loads(message)
-            code = data.get("code")
-            event = data.get("event")
-
-            if code == 1000 or event == "started":
-                logger.debug("[TTS] 收到 started 事件: {}", data)
-                return None
-            elif event == "finished":
-                logger.info("[TTS] 收到 finished 事件: code={}", code)
-                return "finished"
-            elif code and code != 1000:
-                logger.warning("[TTS] 服务端错误: code={}, message={}", code, data.get("message"))
-                return "error"
-            else:
-                logger.debug("[TTS] 收到中间 JSON: {}", data)
-                return None
-        except json.JSONDecodeError as e:
-            logger.warning("[TTS] JSON 解析失败: {} | raw: {}", e, message[:100])
-            return None
-
-    def _parse_binary_audio(self, data: bytes) -> bytes | None:
-        """解析 binary 音频帧（仅当确定是音频数据时调用）
-
-        Args:
-            data: WebSocket binary 帧数据
-
-        Returns:
-            音频数据，失败返回 None
-        """
-        if len(data) == 0:
-            return None
-        logger.debug("[TTS] 收到 binary 音频: {} bytes, 前4字节hex={}", len(data), data[:4].hex())
-        return data
 
 
 # 工厂函数：基于配置创建 TTS Provider
@@ -317,8 +289,9 @@ def create_tts_provider(config: TTSConfig) -> TTSProvider:
 
     if provider_name == "volcengine":
         return VolcengineTTSProvider(
-            app_id=config.volcengine.app_id,
+            appid=config.volcengine.appid,
             token=config.volcengine.token,
+            authorization=config.volcengine.authorization,
             cluster=config.volcengine.cluster,
             default_voice=config.volcengine.default_voice,
         )

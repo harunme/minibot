@@ -111,10 +111,24 @@ class VolcengineASRConfig(Base):
 
 
 class VolcengineTTSConfig(Base):
-    """火山引擎 TTS 配置（V1 TTSProvider 使用）"""
+    """火山引擎 TTS 配置（V1 TTSProvider 使用）
 
-    app_id: str = ""
-    token: str = ""
+    ⚠️ 注意：TTS 凭证与 ASR 凭证是**独立的**，需要分别从火山引擎控制台获取。
+    ASR 用 X-Api-App-Key / X-Api-Access-Key（自定义头），
+    TTS 用 Authorization: Bearer {token}（标准 HTTP 头）。
+
+    参考 xiaozhi doubao TTS 实现：
+    - URL: https://openspeech.bytedance.com/api/v1/tts（HTTP POST，非 WebSocket）
+    - Authorization header: "{authorization}{token}"（默认 "Bearer " + token）
+    - 请求体中 app.token 同 token 字段
+
+    凭证获取（语音合成服务）：
+    https://console.volcengine.com/vei/speech_synthesis
+    """
+
+    appid: str = ""  # 火山引擎 TTS App ID
+    token: str = ""  # 火山引擎 TTS Token（填入 Authorization header 的 token 部分）
+    authorization: str = "Bearer "  # Authorization 前缀，默认 "Bearer "（可为空字符串直接填完整 token）
     cluster: str = "volcano_tts"
     default_voice: str = "zh_female_cancan_mars_bigtts"
 
