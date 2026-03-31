@@ -133,6 +133,33 @@ class VolcengineTTSConfig(Base):
     default_voice: str = "zh_female_cancan_mars_bigtts"
 
 
+class SileroVADConfig(Base):
+    """Silero VAD 配置（V1 VADProvider 使用）
+
+    模型下载：https://github.com/snakers4/silero-vad/releases
+    将 silero_vad.onnx 放到配置路径下，model_path 指向该文件即可。
+
+    参数说明：
+    - threshold: 高阈值，speech_prob >= threshold → 有声（默认 0.5）
+    - threshold_low: 低阈值，speech_prob <= threshold_low → 无声（默认 0.2）
+    - min_silence_duration_ms: 最小静默持续时间（毫秒），超过则认为说完一句话
+    - frame_window_threshold: 滑动窗口阈值，连续 N 帧有声才认为有声（防噪声抖动）
+    """
+
+    model_path: str = ""  # ONNX 模型文件路径，留空则 is_vad 始终返回 False（开发/测试用）
+    threshold: float = 0.5
+    threshold_low: float = 0.2
+    min_silence_duration_ms: int = 1000
+    frame_window_threshold: int = 3
+
+
+class VADConfig(Base):
+    """VAD 语音活动检测配置"""
+
+    provider: str = "silero"  # silero / none（none = 禁用 VAD）
+    silero: SileroVADConfig = Field(default_factory=SileroVADConfig)
+
+
 class ASRConfig(Base):
     """ASR 语音识别配置"""
 
@@ -225,6 +252,7 @@ class Config(BaseSettings):
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     asr: ASRConfig = Field(default_factory=ASRConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
+    vad: VADConfig = Field(default_factory=VADConfig)
 
     @property
     def workspace_path(self) -> Path:

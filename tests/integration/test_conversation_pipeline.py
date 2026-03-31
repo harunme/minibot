@@ -41,6 +41,18 @@ class MockASRProvider:
         self._final_text = final_text
         self._interim_texts = interim_texts or [final_text[:2], final_text]
 
+    async def recognize(
+        self,
+        audio_data: bytes,
+        *,
+        audio_format: str = "opus",
+        sample_rate: int = 16000,
+    ) -> str | None:
+        """单次识别（VAD duplex 模式使用）"""
+        # 模拟处理延迟
+        await asyncio.sleep(0.001)
+        return self._final_text
+
     async def recognize_stream(
         self,
         audio_stream: AsyncIterator[bytes],
@@ -85,6 +97,29 @@ class MockTTSProvider:
         return True
 
 
+class MockVADProvider:
+    """Mock VAD Provider — 模拟真实 VAD 行为用于集成测试
+
+    - is_vad() 始终返回 True（模拟持续有声音）
+    - 每次调用累积音频到 state.audio_buffer
+    - listen(stop) 时通过 ConnectionHandler 触发 _flush_asr()
+    """
+
+    def is_vad(self, state, data: bytes) -> bool:
+        # 模拟持续有声音：追加到缓冲
+        state.audio_buffer.extend(data)
+        # 不自动触发 client_voice_stop（由 listen(stop) 触发）
+        return True
+
+    def create_state(self):
+        from nanobot.providers.vad import VADState
+
+        return VADState()
+
+    def release_state(self, state) -> None:
+        pass
+
+
 # ==================== Mock WebSocket ====================
 
 
@@ -92,19 +127,37 @@ class MockWebSocket:
     """模拟 WebSocket 连接，记录所有发送的消息"""
 
     def __init__(self):
-        self.open = True
+        from websockets.protocol import State as WsState
+
+        self._ws_state = WsState.OPEN
         self.remote_address = ("127.0.0.1", 54321)
         self.sent_messages: list[str | bytes] = []
         self._incoming: asyncio.Queue[str | bytes] = asyncio.Queue()
         self._closed = asyncio.Event()
 
+    @property
+    def open(self) -> bool:
+        from websockets.protocol import State as WsState
+
+        return self._ws_state == WsState.OPEN
+
+    @property
+    def state(self):
+        from websockets.protocol import State as WsState
+
+        return self._ws_state
+
     async def send(self, data: str | bytes) -> None:
-        if not self.open:
+        from websockets.protocol import State as WsState
+
+        if self._ws_state != WsState.OPEN:
             raise Exception("WebSocket closed")
         self.sent_messages.append(data)
 
     async def close(self, code: int = 1000, reason: str = "") -> None:
-        self.open = False
+        from websockets.protocol import State as WsState
+
+        self._ws_state = WsState.CLOSED
         self._closed.set()
 
     def inject(self, message: str | bytes) -> None:
@@ -177,10 +230,11 @@ def mock_tts():
 
 @pytest.fixture
 def channel_with_providers(ws_config, mock_asr, mock_tts):
-    """创建带 Mock ASR/TTS 的 WebSocket Channel"""
+    """创建带 Mock ASR/TTS/VAD 的 WebSocket Channel"""
     bus = MessageBus()
     with patch.object(WebSocketHardwareChannel, "_create_asr_provider", return_value=mock_asr), \
-         patch.object(WebSocketHardwareChannel, "_create_tts_provider", return_value=mock_tts):
+         patch.object(WebSocketHardwareChannel, "_create_tts_provider", return_value=mock_tts), \
+         patch.object(WebSocketHardwareChannel, "_create_vad_provider", return_value=MockVADProvider()):
         ch = WebSocketHardwareChannel(ws_config, bus)
     return ch, bus
 
@@ -324,18 +378,18 @@ class TestPipelineStage3_FullPipeline:
         # ---- Step 2: listen(start) ----
         await handler._handle_listen({"mode": "start"})
         assert handler._listening is True
-        assert handler._asr_task is not None
+        assert handler._vad_state is not None  # VAD mode active
 
         # ---- Step 3: 发送音频 ----
         for i in range(3):
             await handler._handle_binary(b"\x00\x01\x02" * 100)
             await asyncio.sleep(0.002)
 
-        # ---- Step 4: listen(stop) ----
+        # ---- Step 4: listen(stop) 触发 VAD 缓冲送 ASR ----
         await handler._handle_listen({"mode": "stop"})
 
-        # 等待 ASR 完成
-        await asyncio.wait_for(handler._asr_task, timeout=5.0)
+        # 等待 _flush_asr_from_buffer 异步任务完成
+        await asyncio.sleep(0.05)
 
         # ---- Step 5: 验证 ASR 结果到 bus ----
         inbound = await asyncio.wait_for(bus.consume_inbound(), timeout=2.0)
@@ -378,7 +432,7 @@ class TestPipelineStage3_FullPipeline:
         await handler._handle_listen({"mode": "start"})
         await handler._handle_binary(b"\x00" * 100)
         await handler._handle_listen({"mode": "stop"})
-        await asyncio.wait_for(handler._asr_task, timeout=5.0)
+        await asyncio.sleep(0.05)  # 等待 VAD 缓冲送 ASR 完成
 
         inbound = await asyncio.wait_for(bus.consume_inbound(), timeout=2.0)
 
@@ -552,11 +606,9 @@ class TestPipelineStage7_HandshakeToReply:
             await handler._handle_binary(b"\xfe\xed" * 80)
             await asyncio.sleep(0.001)
 
-        # 4. 停止监听
+        # 4. 停止监听（VAD 缓冲触发 _flush_asr_from_buffer）
         await handler._handle_listen({"mode": "stop"})
-
-        # 5. 等待 ASR
-        await asyncio.wait_for(handler._asr_task, timeout=5.0)
+        await asyncio.sleep(0.05)  # 等待 VAD 缓冲送 ASR 完成
 
         # 6. 从 bus 获取 inbound
         inbound = await asyncio.wait_for(bus.consume_inbound(), timeout=2.0)
