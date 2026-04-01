@@ -244,8 +244,9 @@ class ConnectionHandler:
         # 注册连接到 Channel（踢掉同设备旧连接）
         self._channel._register_connection(device_id, self)
 
-        # 发送握手响应（告知客户端 TTS 输出格式）
+        # 发送握手响应（告知客户端 TTS 输出格式及 VAD 配置）
         tts_sample_rate = self._channel._cfg("tts_sample_rate", 24000)
+        vad_enabled = self._channel._vad_provider is not None
         await self._send_json({
             "type": MessageType.HELLO,
             "session_id": self.session_id,
@@ -254,6 +255,7 @@ class ConnectionHandler:
                 "format": "pcm",
                 "sample_rate": tts_sample_rate,
             },
+            "vad": vad_enabled,
         })
         logger.info("[{}] 设备 {} 认证成功", self.session_id, device_id)
 
@@ -310,12 +312,14 @@ class ConnectionHandler:
             if not self._listening:
                 return
 
-            # 发 ASR 结束帧，触发最终结果
+            # 发 ASR 结束帧，触发最终结果；并将 _listening 置 False，
+            # 防止客户端在等待结果期间继续发音频被错误处理。
+            self._listening = False
             asr_provider = self._asr_provider
             if asr_provider is not None:
                 await asr_provider._send_stop()
 
-            logger.info("[{}] 停止语音监听（保持监听状态以支持连续对话）", self.session_id)
+            logger.info("[{}] 停止语音监听（等待 ASR 最终结果）", self.session_id)
 
         else:
             logger.warning("[{}] 无效的 listen mode: {}", self.session_id, mode)

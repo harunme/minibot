@@ -777,13 +777,14 @@ class VolcengineASRProvider(ASRProvider):
                             # 火山引擎 definite 结果后通常会立即收到流结束信号
                             break
                     else:
-                        # 非 definite utterance（中间结果），也透传但不触发处理
+                        # 非 definite utterance（中间结果），透传给客户端用于实时转写
                         partial_text = payload_msg["result"].get("text", "")
                         if partial_text:
                             current = partial_text
                             if current != self._last_logged_text:
                                 self._last_logged_text = current
                                 logger.debug("[ASR] 流式中间结果: {}", partial_text)
+                                await queue.put({"text": partial_text, "is_final": False})
 
                 if "error" in payload_msg:
                     logger.warning("[ASR] 流式识别错误: {}", payload_msg["error"])

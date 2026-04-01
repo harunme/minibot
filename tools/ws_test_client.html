@@ -75,13 +75,42 @@
     margin-bottom: 14px;
   }
 
-  /* --- Form row --- */
-  .form-row {
+  /* --- Mic control area (integrated) --- */
+  .mic-area {
     display: flex;
+    flex-direction: column;
+    align-items: center;
     gap: 10px;
-    flex-wrap: wrap;
-    align-items: flex-end;
   }
+  .mic-area .state-pill {
+    font-size: 0.82rem;
+    min-width: 200px;
+  }
+  #levelMeter {
+    width: 72px;
+    height: 8px;
+    background: var(--surface2);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  #levelBar {
+    height: 100%;
+    width: 0%;
+    background: var(--green);
+    border-radius: 4px;
+    transition: width 0.05s;
+  }
+  #levelBar.active { background: var(--red); }
+
+  /* --- Chunk counter --- */
+  #chunkCount {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    text-align: center;
+    min-height: 1em;
+  }
+
+  /* --- Form row (config section) --- */
   .form-group {
     display: flex;
     flex-direction: column;
@@ -156,12 +185,18 @@
     align-items: center;
     justify-content: center;
     transition: all 0.2s;
+    position: relative;
   }
   .btn-mic:hover { border-color: var(--accent); }
-  .btn-mic.recording {
+  .btn-mic.listening {
     background: rgba(248, 113, 113, 0.15);
     border-color: var(--red);
     animation: pulse 1.5s infinite;
+  }
+  .btn-mic.speaking {
+    background: rgba(251, 191, 36, 0.12);
+    border-color: var(--orange);
+    animation: pulse-orange 1.5s infinite;
   }
   .btn-mic:disabled { opacity: 0.3; cursor: not-allowed; }
 
@@ -169,32 +204,61 @@
     0%, 100% { box-shadow: 0 0 0 0 rgba(248,113,113,0.4); }
     50% { box-shadow: 0 0 0 14px rgba(248,113,113,0); }
   }
+  @keyframes pulse-orange {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(251,191,36,0.4); }
+    50% { box-shadow: 0 0 0 14px rgba(251,191,36,0); }
+  }
 
   /* --- Audio level meter --- */
-  #levelMeter {
-    width: 72px;
-    height: 8px;
-    background: var(--surface2);
-    border-radius: 4px;
-    overflow: hidden;
-    margin: 0 auto 4px;
-  }
-  #levelBar {
-    height: 100%;
-    width: 0%;
-    background: var(--green);
-    border-radius: 4px;
-    transition: width 0.05s;
-  }
-  #levelBar.active { background: var(--red); }
 
-  /* --- Chunk counter --- */
-  #chunkCount {
-    font-size: 0.7rem;
-    color: var(--text-dim);
-    text-align: center;
-    min-height: 1em;
+  /* --- State pill --- */
+  .state-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 14px;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    border: 1px solid transparent;
+    transition: all 0.25s;
+    cursor: default;
+    min-width: 160px;
+    justify-content: center;
   }
+  .state-pill.idle {
+    color: var(--text-dim);
+    border-color: var(--border);
+    background: var(--surface2);
+  }
+  .state-pill.listening {
+    color: var(--red);
+    border-color: rgba(248,113,113,0.4);
+    background: rgba(248,113,113,0.08);
+  }
+  .state-pill.processing {
+    color: var(--blue);
+    border-color: rgba(96,165,250,0.4);
+    background: rgba(96,165,250,0.08);
+  }
+  .state-pill.processing .dot-anim {
+    background: var(--blue);
+    animation: blink 0.8s infinite;
+  }
+  .state-pill.speaking {
+    color: var(--orange);
+    border-color: rgba(251,191,36,0.4);
+    background: rgba(251,191,36,0.08);
+  }
+  .state-pill .dot-anim {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .state-pill.idle .dot-anim { background: var(--text-dim); }
+  .state-pill.listening .dot-anim { background: var(--red); animation: blink 1s infinite; }
+  .state-pill.speaking .dot-anim { background: var(--orange); }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
   /* --- Controls bar --- */
   .controls {
@@ -316,10 +380,48 @@
 
 <div class="container">
 
-  <!-- 连接配置 -->
+  <!-- 对话区 -->
   <div class="card">
-    <div class="card-title">连接配置</div>
-    <div class="form-row">
+    <div class="card-title">对话</div>
+    <div id="conversation" class="conversation">
+      <div class="empty-hint">点击 🎙 连接服务器并开始说话</div>
+    </div>
+  </div>
+
+  <!-- 操作区 -->
+  <div class="card">
+    <div class="mic-area">
+      <div id="levelMeter"><div id="levelBar"></div></div>
+      <button id="btnMic" class="btn-mic">
+        🎙
+      </button>
+      <div id="chunkCount"></div>
+      <div id="statePill" class="state-pill idle">
+        <span class="dot-anim"></span>
+        <span id="stateText">点击连接</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 状态 + 日志 -->
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <div class="card-title" style="margin-bottom:0;">日志</div>
+      <div class="status-bar">
+        <span id="dot" class="dot"></span>
+        <span id="statusText">未连接</span>
+        <span id="wsInfo" style="font-size:0.72rem; color:var(--text-dim); margin-left:6px;"></span>
+      </div>
+    </div>
+    <div id="log"></div>
+  </div>
+
+  <!-- 连接配置（折叠在日志卡片底部） -->
+  <details class="card" style="padding:14px 20px;">
+    <summary style="cursor:pointer; font-size:0.78rem; color:var(--text-dim); user-select:none;">
+      ⚙ 连接配置
+    </summary>
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-top:10px;">
       <div class="form-group">
         <label>WebSocket 地址</label>
         <input id="url" type="text" value="ws://localhost:9000" />
@@ -332,59 +434,19 @@
         <label>Token（可选）</label>
         <input id="token" type="text" placeholder="留空跳过认证" />
       </div>
-      <button id="btnConnect" class="btn-primary" onclick="toggleConnect()">
-        连接
-      </button>
     </div>
-  </div>
-
-  <!-- 对话区 -->
-  <div class="card">
-    <div class="card-title">对话</div>
-    <div id="conversation" class="conversation">
-      <div class="empty-hint">连接服务器后，按住 🎙 录音开始对话</div>
-    </div>
-  </div>
-
-  <!-- 操作区 -->
-  <div class="card">
-    <div id="levelMeter"><div id="levelBar"></div></div>
-    <div id="chunkCount"></div>
-    <div class="controls">
-      <div class="controls-side">
-        <button id="btnAbort" class="btn-ghost" onclick="sendAbort()" disabled>
-          ⏹ 中止TTS
-        </button>
-      </div>
-      <button id="btnMic" class="btn-mic">
-        🎙
-      </button>
-      <div class="controls-side">
-        <button id="btnPing" class="btn-ghost" onclick="sendPing()" disabled>
-          💓 心跳
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <!-- 状态 + 日志 -->
-  <div class="card">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-      <div class="card-title" style="margin-bottom:0;">日志</div>
-      <div class="status-bar">
-        <span id="dot" class="dot"></span>
-        <span id="statusText">未连接</span>
-      </div>
-    </div>
-    <div id="log"></div>
-  </div>
+  </details>
 
 </div>
 
 <script>
 // ============================================================
-// State
+// State machine: IDLE → LISTENING → SPEAKING → IDLE
+// IDLE also covers "connecting" sub-state
 // ============================================================
+const AppState = { IDLE: 'idle', LISTENING: 'listening', PROCESSING: 'processing', SPEAKING: 'speaking' };
+let appState = AppState.IDLE;
+let connecting = false;          // 正在建立连接中
 let ws = null;
 let connected = false;
 let recording = false;
@@ -393,13 +455,16 @@ let mediaStream = null;
 let scriptProcessor = null;
 let playQueue = [];
 let playing = false;
-let chunkSentCount = 0;      // 已发送音频块计数
-let lastChunkTime = 0;       // 上次收到音频块的时间
+let chunkSentCount = 0;
+let lastChunkTime = 0;
+let heartbeatTimer = null;
 
 // 录音采样率（与 ASR 期望一致）
 const REC_SAMPLE_RATE = 16000;
 // TTS 播放采样率（由服务端 hello 响应中的 audio_params.sample_rate 指定）
 let serverSampleRate = 24000;
+// VAD 模式标志（由服务端 hello 响应指定，影响超时和行为）
+let vadMode = false;
 
 
 // ============================================================
@@ -408,16 +473,16 @@ let serverSampleRate = 24000;
 const $url       = document.getElementById('url');
 const $deviceId  = document.getElementById('deviceId');
 const $token     = document.getElementById('token');
-const $btnConnect= document.getElementById('btnConnect');
 const $btnMic    = document.getElementById('btnMic');
-const $btnAbort  = document.getElementById('btnAbort');
-const $btnPing   = document.getElementById('btnPing');
 const $log       = document.getElementById('log');
 const $dot       = document.getElementById('dot');
 const $status    = document.getElementById('statusText');
+const $wsInfo    = document.getElementById('wsInfo');
 const $convo     = document.getElementById('conversation');
 const $levelBar  = document.getElementById('levelBar');
 const $chunkCount= document.getElementById('chunkCount');
+const $statePill = document.getElementById('statePill');
+const $stateText = document.getElementById('stateText');
 
 // ============================================================
 // Logging
@@ -490,39 +555,126 @@ function setStatus(state, text) {
   $status.textContent = text;
 }
 
-function setControlsEnabled(en) {
-  $btnMic.disabled = !en;
-  $btnAbort.disabled = !en;
-  $btnPing.disabled = !en;
+function setWsInfo(text) {
+  $wsInfo.textContent = text;
+}
+
+// ============================================================
+// App State machine
+// ============================================================
+const STATE_LABELS = {
+  idle: '点击麦克风开始说话',
+  listening: '正在听...',
+  processing: '处理中...',
+  speaking: '说话中，点击打断',
+};
+
+function setAppState(newState) {
+  appState = newState;
+  $statePill.className = 'state-pill ' + newState;
+  $stateText.textContent = STATE_LABELS[newState] || newState;
+
+  // Mic button style
+  $btnMic.classList.remove('listening', 'speaking');
+  if (newState === AppState.LISTENING) $btnMic.classList.add('listening');
+  if (newState === AppState.SPEAKING)   $btnMic.classList.add('speaking');
+}
+
+// Mic button click — integrates connect + interrupt
+function onMicClick() {
+  if (!connected && !connecting) {
+    // 未连接 → 自动连接
+    connect();
+    return;
+  }
+  if (!connected) return;
+
+  switch (appState) {
+    case AppState.IDLE:
+      startListening();
+      break;
+    case AppState.LISTENING:
+      stopListening();
+      break;
+    case AppState.SPEAKING:
+      onAbortClick();
+      break;
+  }
+}
+
+// 打断 TTS
+function onAbortClick() {
+  if (appState !== AppState.SPEAKING) return;
+  sendAbort();
+  stopPlayback();
+  clearInterim();
+  setAppState(AppState.IDLE);
+  appendLog('已打断 TTS', 'log-warn');
+}
+
+function clearInterim() {
+  if (interimBubble) {
+    interimBubble.remove();
+    interimBubble = null;
+  }
+}
+
+// PROCESSING 状态超时兜底（ASR 无结果时返回 IDLE）
+// VAD 模式下服务端等待静默检测后才送 ASR，需要更长超时
+const PROCESSING_TIMEOUT_NORMAL = 8000;  // 非 VAD 模式：8s
+const PROCESSING_TIMEOUT_VAD = 20000;    // VAD 模式：20s（等 VAD 静默检测 + ASR 响应）
+let processingTimer = null;
+
+function getProcessingTimeout() {
+  return vadMode ? PROCESSING_TIMEOUT_VAD : PROCESSING_TIMEOUT_NORMAL;
+}
+
+function clearProcessingTimer() {
+  if (processingTimer !== null) {
+    clearTimeout(processingTimer);
+    processingTimer = null;
+  }
+}
+
+function startProcessingTimer() {
+  clearProcessingTimer();
+  const timeout = getProcessingTimeout();
+  processingTimer = setTimeout(() => {
+    if (appState === AppState.PROCESSING) {
+      appendLog(`⚠ ASR 无响应（${timeout/1000}s 超时），返回就绪`, 'log-warn');
+      clearInterim();
+      setAppState(AppState.IDLE);
+    }
+  }, timeout);
+}
+
+function stopPlayback() {
+  playQueue = [];
+  playing = false;
 }
 
 // ============================================================
 // WebSocket
 // ============================================================
-function toggleConnect() {
-  if (connected) {
-    disconnect();
-  } else {
-    connect();
-  }
-}
-
 function connect() {
+  if (connected || connecting) return;
   const url = $url.value.trim();
   if (!url) return;
 
+  connecting = true;
   appendLog(`连接 ${url} ...`, 'log-send');
   setStatus('', '连接中...');
-  $btnConnect.textContent = '连接中...';
-  $btnConnect.disabled = true;
+  $stateText.textContent = '连接中...';
+  $btnMic.disabled = true;
 
   try {
     ws = new WebSocket(url);
   } catch (e) {
     appendLog(`创建 WebSocket 失败: ${e.message}`, 'log-error');
     setStatus('err', '连接失败');
-    $btnConnect.textContent = '连接';
-    $btnConnect.disabled = false;
+    connecting = false;
+    $btnMic.disabled = false;
+    $stateText.textContent = '点击连接';
     return;
   }
 
@@ -530,13 +682,14 @@ function connect() {
 
   ws.onopen = () => {
     connected = true;
+    connecting = false;
     appendLog('WebSocket 连接成功', 'log-recv');
     setStatus('ok', '已连接');
-    $btnConnect.textContent = '断开';
-    $btnConnect.disabled = false;
-    $btnConnect.classList.remove('btn-primary');
-    $btnConnect.classList.add('btn-danger');
+    $btnMic.disabled = false;
     sendHello();
+    startHeartbeat();
+    // 连接成功后自动开始录音
+    startListening();
   };
 
   ws.onmessage = (ev) => {
@@ -560,7 +713,8 @@ function connect() {
 }
 
 function disconnect() {
-  if (recording) stopRecording();
+  if (recording) stopListening();
+  stopHeartbeat();
   if (ws) {
     ws.close();
   }
@@ -569,13 +723,38 @@ function disconnect() {
 
 function resetConnection() {
   connected = false;
+  connecting = false;
   ws = null;
-  setStatus('', '未连接');
-  setControlsEnabled(false);
-  $btnConnect.textContent = '连接';
-  $btnConnect.disabled = false;
-  $btnConnect.classList.remove('btn-danger');
-  $btnConnect.classList.add('btn-primary');
+  if (recording) stopRecording();
+  stopPlayback();
+  stopHeartbeat();
+  clearProcessingTimer();
+  clearInterim();
+  setAppState(AppState.IDLE);
+  $btnMic.disabled = false;
+  $stateText.textContent = '点击连接';
+  $status.textContent = '未连接';
+  $dot.className = 'dot';
+  $wsInfo.textContent = '';
+}
+
+// ============================================================
+// Heartbeat
+// ============================================================
+const HEARTBEAT_INTERVAL = 25000; // 25s 自动心跳
+
+function startHeartbeat() {
+  stopHeartbeat();
+  heartbeatTimer = setInterval(() => {
+    if (connected) sendPing();
+  }, HEARTBEAT_INTERVAL);
+}
+
+function stopHeartbeat() {
+  if (heartbeatTimer !== null) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
 }
 
 // ============================================================
@@ -635,11 +814,14 @@ function handleTextMessage(raw) {
         serverSampleRate = data.audio_params.sample_rate;
         appendLog(`   音频参数: ${data.audio_params.format} ${serverSampleRate}Hz`, 'log-recv');
       }
+      // 记录 VAD 模式（服务端告知是否启用 VAD）
+      if (data.vad !== undefined) {
+        vadMode = data.vad;
+        appendLog(`   VAD 模式: ${vadMode ? '启用' : '关闭'}`, 'log-recv');
+      }
       setStatus('ok', `已认证 (${$deviceId.value})`);
-      setControlsEnabled(true);
-      // 连接成功后自动开始持续录音，音频流直接送服务端 VAD 检测
-      startRecording();
-      sendListen('start');
+      setWsInfo($url.value.trim());
+      setAppState(AppState.IDLE);
       break;
 
     case 'stt': {
@@ -648,6 +830,13 @@ function handleTextMessage(raw) {
       if (isFinal) {
         appendLog(`← ASR 【最终】: ${text}`, 'log-asr');
         finalizeInterim(text);
+        // ASR 结果已到达，清除超时定时器；等待 TTS start 进入 SPEAKING，
+        // 若无 TTS 回复则回到 IDLE（用户可随时点击麦克风开启新一轮）
+        clearProcessingTimer();
+        // 只有不在 SPEAKING 时才回 IDLE，避免打断播放中 TTS
+        if (appState !== AppState.SPEAKING) {
+          setAppState(AppState.IDLE);
+        }
       } else {
         appendLog(`← ASR 【中间】: ${text}`, 'log-asr');
         updateInterim(text);
@@ -663,10 +852,28 @@ function handleTextMessage(raw) {
     case 'tts':
       if (data.state === 'start') {
         appendLog('← TTS 开始 🔊', 'log-recv');
+        clearProcessingTimer();
+        clearInterim();
         playQueue = [];
         playing = false;
+        // 如果还在录音，先停止
+        if (appState === AppState.LISTENING) {
+          stopListening();
+        }
+        setAppState(AppState.SPEAKING);
+      } else if (data.state === 'stop') {
+        // 服务端通知打断（VAD 检测到用户说话 或 客户端 abort 命令）
+        appendLog('← TTS 被打断', 'log-warn');
+        stopPlayback();
+        clearInterim();
+        if (appState === AppState.SPEAKING) {
+          setAppState(AppState.IDLE);
+        }
       } else if (data.state === 'end') {
         appendLog('← TTS 结束', 'log-recv');
+        if (appState === AppState.SPEAKING) {
+          setAppState(AppState.IDLE);
+        }
       }
       break;
 
@@ -676,6 +883,9 @@ function handleTextMessage(raw) {
 
     case 'error':
       appendLog(`← 错误: ${data.code || ''} — ${data.message || ''}`, 'log-error');
+      clearProcessingTimer();
+      clearInterim();
+      if (appState !== AppState.IDLE) setAppState(AppState.IDLE);
       break;
 
     default:
@@ -739,9 +949,9 @@ async function playNextChunk() {
 // ============================================================
 // Microphone Recording
 // ============================================================
-async function startRecording() {
+// 点击麦克风开始录音
+async function startListening() {
   if (recording) return;
-
   try {
     await ensureAudioContext();
 
@@ -819,15 +1029,18 @@ async function startRecording() {
     $levelBar.style.width = '0%';
     $chunkCount.textContent = '';
 
-    $btnMic.classList.add('recording');
-    appendLog('🎙 持续监听中...', 'log-info');
+    setAppState(AppState.LISTENING);
+    sendListen('start');
+    appendLog('🎙 开始录音', 'log-info');
 
   } catch (e) {
     appendLog(`麦克风获取失败: ${e.message}`, 'log-error');
+    setAppState(AppState.IDLE);
   }
 }
 
-function stopRecording() {
+// 点击麦克风再次点击或由 TTS 开始时停止录音
+function stopListening() {
   if (!recording) return;
   recording = false;
 
@@ -844,13 +1057,20 @@ function stopRecording() {
     mediaStream = null;
   }
 
-  $btnMic.classList.remove('recording');
   $levelBar.style.width = '0%';
+  sendListen('stop');
+  // 发送结束帧后清除临时气泡，避免残留"正在听"状态
+  clearInterim();
   appendLog('🎙 停止录音 (共发送 ' + chunkSentCount + ' 块)', 'log-info');
+  // 进入 PROCESSING，等待 ASR 最终结果或 TTS 开始；加超时兜底
+  setAppState(AppState.PROCESSING);
+  startProcessingTimer();
 }
 
 // Prevent context menu on long-press (mobile)
 document.getElementById('btnMic').addEventListener('contextmenu', e => e.preventDefault());
+// Mic button click — state-aware
+document.getElementById('btnMic').addEventListener('click', onMicClick);
 </script>
 </body>
 </html>
