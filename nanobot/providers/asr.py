@@ -29,7 +29,6 @@ from loguru import logger
 
 from nanobot.config.schema import ASRConfig
 
-
 # 火山引擎 ASR WebSocket API 配置
 # 多语种模式使用 bigmodel_nostream，单语种使用 bigmodel
 VOLCEENGINE_ASR_WS_URL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
@@ -133,6 +132,13 @@ class VolcengineASRProvider(ASRProvider):
         self._decoder = opuslib_next.Decoder(16000, 1)
         # 追踪上一次日志文本，避免打印大量重复的中间结果
         self._last_logged_text = ""
+        # 流式帧接收（xiaozhi STREAM 模式）：持久 WebSocket 连接
+        self._stream_ws: websockets.WebSocketClientProtocol | None = None
+        self._stream_ready: bool = False
+        self._stream_result_queue: asyncio.Queue[dict | None] = asyncio.Queue()
+        self._stream_receiver_task: asyncio.Task | None = None
+        # 重连锁：防止并发多次 _stream_ws_connect() 造成竞争
+        self._stream_connect_lock: asyncio.Lock = asyncio.Lock()
 
     async def recognize(
         self,
@@ -601,15 +607,230 @@ class VolcengineASRProvider(ASRProvider):
         except Exception as e:
             logger.warning("[ASR] WebSocket 连接失败: {}", e)
 
+    # ─── 流式帧接收（xiaozhi STREAM 模式） ────────────────────────────────────
+
+    async def receive_audio(
+        self,
+        audio_frame: bytes,
+        *,
+        audio_format: str = "opus",
+    ) -> None:
+        """流式接收音频帧：每帧解码后立即发送到 ASR WebSocket
+
+        与 xiaozhi STREAM 模式对齐：帧到即发，不等待 buffer 积累。
+        ASR 服务端靠自身 VAD 返回 partial/partial→final 结果。
+
+        Args:
+            audio_frame: 单帧音频数据（Opus 或 PCM）
+            audio_format: 音频格式
+        """
+        # 首次调用或连接未就绪时建立/重建连接（持锁防止并发重连）
+        if self._stream_ws is None or not self._stream_ready:
+            async with self._stream_connect_lock:
+                # 双检查：持锁后再次确认，避免多任务重复建连
+                if self._stream_ws is None or not self._stream_ready:
+                    await self._stream_ws_connect()
+
+        ws = self._stream_ws
+        if ws is None or not self._stream_ready:
+            return
+
+        try:
+            # Opus 解码为 PCM（使用实例级 decoder，每帧独立解码）
+            if audio_format == "opus":
+                pcm_frame = self._decoder.decode(audio_frame, 960)
+            else:
+                pcm_frame = audio_frame
+
+            # gzip 压缩并发送
+            payload = gzip.compress(pcm_frame)
+            audio_request = bytearray(self._generate_audio_header())
+            audio_request.extend(len(payload).to_bytes(4, "big"))
+            audio_request.extend(payload)
+            await ws.send(bytes(audio_request))
+
+        except websockets.exceptions.ConnectionClosed:
+            logger.warning("[ASR] 流式 WebSocket 已关闭，尝试重连")
+            self._stream_ws = None
+            self._stream_ready = False
+            # 下一帧会触发重连
+        except Exception as e:
+            logger.warning("[ASR] 发送音频帧失败: {}", e)
+
+    async def stream_results(self) -> AsyncIterator[dict]:
+        """异步迭代器：消费 ASR 流式识别结果
+
+        Yields:
+            dict，包含 keys:
+            - text: 识别文本
+            - is_final: 是否为最终结果（definite=True）
+        """
+        queue = self._stream_result_queue
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            yield item
+
+    async def _send_stop(self) -> None:
+        """发送结束帧，通知 ASR 服务端语音已结束
+
+        等效于 xiaozhi 的 _send_stop_request()。
+        发完后 receiver 会继续收到最终结果（definite=True 的 utterance），
+        最终收到 None 时 stream_results() 退出。
+        """
+        ws = self._stream_ws
+        # 仅在流式连接已就绪时才发送
+        if ws is None or not self._stream_ready:
+            return
+
+        try:
+            empty_payload = gzip.compress(b"")
+            last_request = bytearray(self._generate_audio_header(last=True))
+            last_request.extend(len(empty_payload).to_bytes(4, "big"))
+            last_request.extend(empty_payload)
+            await ws.send(bytes(last_request))
+            logger.debug("[ASR] 结束帧已发送")
+        except websockets.exceptions.ConnectionClosed:
+            # 服务器已先关闭连接（常见于服务端 VAD 先于客户端发送结束帧），
+            # 清理本地状态，防止 receive_audio 误认为连接仍存活。
+            logger.debug("[ASR] 结束帧：连接已由服务端关闭，清理本地状态")
+            self._stream_ws = None
+            self._stream_ready = False
+        except Exception as e:
+            logger.warning("[ASR] 发送结束帧失败: {}", e)
+
+    async def _stream_ws_connect(self) -> None:
+        """建立持久的 ASR WebSocket 流式连接
+
+        连接建立后启动 sender（由调用方驱动，通过 receive_audio 发送帧）
+        和 receiver（后台任务，消费识别结果）。
+        """
+        if self._stream_ws is not None:
+            return
+
+        connect_id = str(uuid.uuid4())
+        reqid = str(uuid.uuid4())
+        self._last_logged_text = ""
+
+        try:
+            ws = await websockets.connect(
+                self._ws_url,
+                additional_headers=self._get_headers(connect_id),
+                ping_interval=None,
+                ping_timeout=None,
+                close_timeout=10,
+            )
+            self._stream_ws = ws
+            logger.debug("[ASR] 流式 WebSocket 连接成功")
+
+            # 发送初始化请求
+            request_params = self._build_request(reqid)
+            payload_bytes = str.encode(json.dumps(request_params))
+            payload_bytes = gzip.compress(payload_bytes)
+            full_request = bytearray(self._generate_header(message_type=0x01))
+            full_request.extend(len(payload_bytes).to_bytes(4, "big"))
+            full_request.extend(payload_bytes)
+            await ws.send(bytes(full_request))
+
+            # 启动后台 receiver
+            self._stream_receiver_task = asyncio.create_task(self._stream_receiver())
+            self._stream_ready = True
+            logger.debug("[ASR] 流式连接就绪")
+
+        except Exception as e:
+            logger.warning("[ASR] 流式 WebSocket 连接失败: {}", e)
+            self._stream_ws = None
+            self._stream_ready = False
+
+    async def _stream_receiver(self) -> None:
+        """后台任务：消费 ASR WebSocket 识别结果
+
+        等效于 xiaozhi 的 _forward_results()。
+        火山引擎返回 definite=True 的 utterance 时为最终结果。
+        """
+        ws = self._stream_ws
+        if ws is None:
+            return
+
+        queue = self._stream_result_queue
+        try:
+            async for message in ws:
+                if isinstance(message, str):
+                    payload_msg = json.loads(message)
+                else:
+                    payload_msg = self._parse_response(message).get("payload_msg", {})
+
+                status_code = payload_msg.get("code")
+
+                # 静默处理无有效语音错误码
+                if status_code == 1013:
+                    continue
+
+                if "result" in payload_msg:
+                    utterances = payload_msg["result"].get("utterances", [])
+                    for utterance in utterances:
+                        if utterance.get("definite", False):
+                            text = utterance["text"]
+                            logger.info("[ASR] 流式最终结果: {}", text)
+                            await queue.put({"text": text, "is_final": True})
+                            # 火山引擎 definite 结果后通常会立即收到流结束信号
+                            break
+                    else:
+                        # 非 definite utterance（中间结果），也透传但不触发处理
+                        partial_text = payload_msg["result"].get("text", "")
+                        if partial_text:
+                            current = partial_text
+                            if current != self._last_logged_text:
+                                self._last_logged_text = current
+                                logger.debug("[ASR] 流式中间结果: {}", partial_text)
+
+                if "error" in payload_msg:
+                    logger.warning("[ASR] 流式识别错误: {}", payload_msg["error"])
+                    break
+
+                # 多语种模式持续到有结果
+                if self._enable_multilingual and payload_msg.get("result", {}).get("text"):
+                    break
+
+        except websockets.exceptions.ConnectionClosed:
+            logger.info("[ASR] 流式 WebSocket 关闭")
+        except Exception as e:
+            logger.warning("[ASR] 流式接收错误: {}", e)
+        finally:
+            self._stream_ready = False
+            self._stream_ws = None  # 显式清空，receive_audio 下次触发建连
+            await queue.put(None)  # 通知 stream_results() 退出
+
+    async def _close_stream_ws(self) -> None:
+        """关闭流式 WebSocket 连接"""
+        if self._stream_ws is not None:
+            try:
+                await asyncio.wait_for(self._stream_ws.close(), timeout=2.0)
+            except Exception:
+                pass
+        self._stream_ws = None
+        self._stream_ready = False
+
+        if self._stream_receiver_task:
+            self._stream_receiver_task.cancel()
+            try:
+                await self._stream_receiver_task
+            except asyncio.CancelledError:
+                pass
+            self._stream_receiver_task = None
+
     async def close(self) -> None:
-        """释放资源（Opus 解码器等）"""
+        """释放资源（Opus 解码器 + 流式连接）"""
+        await self._close_stream_ws()
+
         if hasattr(self, "_decoder") and self._decoder is not None:
             try:
                 del self._decoder
                 self._decoder = None
                 logger.debug("[ASR] Opus decoder 资源已释放")
             except Exception as e:
-                logger.debug("[ASR] 释放 Opus decoder 时出错: {}", e)
+                logger.debug("[AS] 释放 Opus decoder 时出错: {}", e)
         # 重置日志追踪状态
         self._last_logged_text = ""
 
