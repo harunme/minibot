@@ -22,8 +22,17 @@ class MessageTool(Tool):
         self._default_message_id = default_message_id
         self._sent_in_turn: bool = False
 
-    def set_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
-        """Set the current message context."""
+    def set_context(
+        self, channel: str, chat_id: str, session: Any = None, message_id: str | None = None
+    ) -> None:
+        """Set the current message context.
+
+        Args:
+            channel: 目标频道.
+            chat_id: 目标聊天 ID.
+            session: 当前会话对象（暂未使用，保留扩展）.
+            message_id: 消息 ID（用于回复追踪）.
+        """
         self._default_channel = channel
         self._default_chat_id = chat_id
         self._default_message_id = message_id
