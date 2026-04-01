@@ -552,8 +552,9 @@ class ConnectionHandler:
                     (time.monotonic() - pipeline_t0) * 1000,
                 )
 
-        # 2. TTS 流式合成
+        # 2. TTS 流式合成 + 音频下行（music PCM 直接拼接在 TTS 后面）
         tts_provider = self._channel._tts_provider
+        music_path = msg.metadata.get("music") if msg.metadata else None
         if tts_provider and msg.content:
             # 通知客户端 TTS 开始，客户端进入说话中状态
             await self._send_json({"type": MessageType.TTS, "state": "start"})
@@ -606,41 +607,20 @@ class ConnectionHandler:
             except Exception as e:
                 logger.exception("[{}] TTS 合成失败: {}", self.session_id, e)
 
-        # 3. 音乐播放（msg.metadata["music"] = MP3 文件路径）
-        music_path = msg.metadata.get("music") if msg.metadata else None
-        if music_path:
-            await self._stream_music(music_path)
-
-    async def _stream_music(self, mp3_path: str) -> None:
-        """通过 WebSocket 发送音乐 PCM 流到客户端。
-
-        发送流程：music start(JSON) → PCM chunks(二进制) → music end(JSON)
-        """
-        if self._ws.state != WsState.OPEN:
-            logger.warning("[{}] WebSocket 已关闭，跳过音乐播放", self.session_id)
-            return
-        tts_sample_rate = self._channel._cfg("tts_sample_rate", 24000)
-        player = MusicPlayer(sample_rate=tts_sample_rate)
-        await self._send_json({"type": MessageType.MUSIC, "state": "start"})
-        self._client_is_speaking = True
-        try:
+        # 3. 音乐播放：TTS 结束后直接拼接 music PCM（无 music 标记，客户端按时间顺序播放）
+        if music_path and self._ws.state == WsState.OPEN:
+            tts_sample_rate = self._channel._cfg("tts_sample_rate", 24000)
+            player = MusicPlayer(sample_rate=tts_sample_rate)
             sent_bytes = 0
             chunk_count = 0
-            async for pcm_chunk in player.stream(mp3_path):
+            async for pcm_chunk in player.stream(music_path):
                 if self._ws.state != WsState.OPEN:
                     break
                 await self._ws.send(pcm_chunk)
                 sent_bytes += len(pcm_chunk)
                 chunk_count += 1
-                # 复用 TTS 的节流策略，避免网络拥塞
                 await asyncio.sleep(0.005)
-            logger.info("[{}] 音乐播放完成: {} chunks, {} bytes", self.session_id, chunk_count, sent_bytes)
-        except Exception as e:
-            logger.exception("[{}] 音乐播放失败: {}", self.session_id, e)
-        finally:
-            self._client_is_speaking = False
-            if self._ws.state == WsState.OPEN:
-                await self._send_json({"type": MessageType.MUSIC, "state": "end"})
+            logger.info("[{}] 音乐 PCM 发送完成: {} chunks, {} bytes", self.session_id, chunk_count, sent_bytes)
 
     async def _send_json(self, data: dict[str, Any]) -> None:
         """发送 JSON 消息"""
@@ -837,6 +817,8 @@ class WebSocketHardwareChannel(BaseChannel):
                 port,
                 # 连接限制
                 max_size=262144,  # 256KB 最大消息大小
+                # 禁用服务器自动 ping/pong（客户端通过应用层 ping 维持连接）
+                ping_interval=None,
             )
             logger.info("WebSocket 服务器已启动，监听 {}:{}", host, port)
 
