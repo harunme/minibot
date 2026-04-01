@@ -105,7 +105,7 @@ class MockVADProvider:
     - listen(stop) 时通过 ConnectionHandler 触发 _flush_asr()
     """
 
-    def is_vad(self, state, data: bytes) -> bool:
+    def is_vad(self, state, data: bytes, audio_format: str = "pcm") -> bool:
         # 模拟持续有声音：追加到缓冲
         state.audio_buffer.extend(data)
         # 不自动触发 client_voice_stop（由 listen(stop) 触发）
@@ -378,14 +378,13 @@ class TestPipelineStage3_FullPipeline:
         # ---- Step 2: listen(start) ----
         await handler._handle_listen({"mode": "start"})
         assert handler._listening is True
-        assert handler._vad_state is not None  # VAD mode active
 
         # ---- Step 3: 发送音频 ----
         for i in range(3):
             await handler._handle_binary(b"\x00\x01\x02" * 100)
             await asyncio.sleep(0.002)
 
-        # ---- Step 4: listen(stop) 触发 VAD 缓冲送 ASR ----
+        # ---- Step 4: listen(stop) 触发 ASR 产生最终结果 ----
         await handler._handle_listen({"mode": "stop"})
 
         # 等待 _flush_asr_from_buffer 异步任务完成
@@ -583,8 +582,58 @@ class TestPipelineStage6_MultipleConnections:
         assert not any(m.get("text") == "Hello B" for m in ws1.json_messages)
 
 
-class TestPipelineStage7_HandshakeToReply:
-    """阶段 7：完整对话轮次（含握手）"""
+class TestPipelineStage8_ContinuousDialogue:
+    """阶段 8：连续多轮对话（无显式 listen stop/start）"""
+
+    async def test_asr_task_auto_restarts_after_vad_trigger(self, channel_with_providers):
+        """ASR task 在每轮完成后自动重启，支持连续对话"""
+        channel, bus = channel_with_providers
+        ws = MockWebSocket()
+        handler = ConnectionHandler(ws, channel)
+
+        # 握手
+        await handler._handle_hello({"device_id": "cont_dev", "token": ""})
+        assert handler.authenticated
+
+        # listen(start) 初始化 ASR task
+        await handler._handle_listen({"mode": "start"})
+        assert handler._listening
+        assert handler._asr_task is not None
+
+        # 发音频帧
+        await handler._handle_binary(b"\x00\x01" * 80)
+        await handler._handle_binary(b"\x00\x01" * 80)
+        await asyncio.sleep(0.01)
+
+        # listen(stop) 触发 ASR 产生最终结果
+        await handler._handle_listen({"mode": "stop"})
+        await asyncio.sleep(0.05)
+
+        # 验证第一轮 ASR 完成了（发布到 bus）
+        inbound1 = await asyncio.wait_for(bus.consume_inbound(), timeout=2.0)
+        assert inbound1.content == "你好世界"
+        assert inbound1.chat_id == "cont_dev"
+
+        # ASR task 现在应该是 done=True（等待新音频自动重启）
+        assert handler._asr_task is not None
+        await asyncio.sleep(0.02)  # 等待 task 完成清理
+
+        # 发新一轮音频帧（模拟用户继续说话）→ ASR task 应自动重启
+        old_task = handler._asr_task
+        await handler._handle_binary(b"\xaa\xbb" * 80)
+        await asyncio.sleep(0.01)
+
+        # ASR task 应该已重启
+        assert handler._asr_task is not None
+        assert handler._asr_task != old_task
+        assert not handler._asr_task.done()
+
+        # 模拟 Agent 回复
+        await channel.send(OutboundMessage(
+            channel="websocket_hw",
+            chat_id="cont_dev",
+            content="第一轮回复",
+        ))
 
     async def test_conversation_round_trip(self, channel_with_providers, mock_asr, mock_tts):
         """完整对话轮次：握手 → 监听 → ASR → [Bus] → 回复 → TTS"""

@@ -1,18 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "Bash(find /Users/binwang/Working/github/minibot -maxdepth 3 -type f \\\\\\(-name *.yaml -o -name *.yml -o -name *.toml -o -name *.json -o -name *.md \\\\\\))",
       "Bash(python3:*)",
-      "Read(//Users/binwang/.claude/plugins/cache/understand-anything/understand-anything/1.1.1/packages/dashboard/**)",
       "Bash(pnpm install:*)",
       "Bash(npm install:*)",
-      "Bash(PLUGIN_DIR=\"/Users/binwang/.claude/plugins/cache/understand-anything/understand-anything/1.1.1/packages/dashboard\" cd \"$PLUGIN_DIR\")",
-      "Bash(PLUGIN_DIR=\"/Users/binwang/.claude/plugins/cache/understand-anything/understand-anything/1.1.1\" cd \"$PLUGIN_DIR\")",
-      "Bash(pnpm --filter @understand-anything/core build)",
+     
       "Read(//Users/binwang/.claude/plugins/**)",
       "Read(//Users/binwang/.claude/**)",
-      "WebFetch(domain:www.minimaxi.com)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(python:*)"
     ]
   }
 }

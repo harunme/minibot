@@ -4,7 +4,7 @@ VADProvider 抽象基类定义 VAD 的标准接口，
 支持多提供商扩展（V1 实现 Silero VAD）。
 
 使用方式：
-    provider = SileroVADProvider(model_path="/path/to/silero_vad.onnx")
+    provider = SileroVADProvider()
     state = provider.create_state()
     while True:
         have_voice = provider.is_vad(state, opus_packet)
@@ -15,12 +15,10 @@ VADProvider 抽象基类定义 VAD 的标准接口，
 
 from __future__ import annotations
 
-import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-import httpx
 import numpy as np
 import opuslib_next
 from loguru import logger
@@ -61,12 +59,13 @@ class VADProvider(ABC):
     """VAD 语音活动检测抽象基类 — 支持多提供商扩展"""
 
     @abstractmethod
-    def is_vad(self, state: VADState, data: bytes) -> bool:
+    def is_vad(self, state: VADState, data: bytes, audio_format: str = "pcm") -> bool:
         """检测音频数据中的语音活动
 
         Args:
             state: VAD 运行时状态（由 create_state() 创建）
-            data: 音频数据（opus packet）
+            data: 音频数据（opus packet 或 pcm 原始数据）
+            audio_format: 音频格式（"opus" 或 "pcm"）
 
         Returns:
             当前帧是否有语音活动
@@ -91,13 +90,7 @@ class SileroVADProvider(VADProvider):
     """Silero VAD 实现（V1 主选）
 
     基于 Silero VAD ONNX 模型实现，支持双阈值判断和滑动窗口。
-
-    参考 xiaozhi VAD 实现（core/providers/vad/silero.py）。
-
-    模型下载：
-        https://github.com/snakers4/silero-vad/releases
-        模型文件：silero_vad.onnx（约 2MB）
-        自动下载：如 model_path 对应文件不存在，自动从 GitHub Releases 下载到默认路径
+    模型由 pip 包 `silero-vad` 绑定提供，无需手动下载。
 
     算法要点：
     - 双阈值判断：speech_prob >= high_threshold → 有声，
@@ -107,14 +100,8 @@ class SileroVADProvider(VADProvider):
     - 静默超时：超过 silence_threshold_ms 无声音认为说完一句话
     """
 
-    _DEFAULT_MODEL_PATH = "~/.nanobot/models/silero_vad.onnx"
-    _MODEL_DOWNLOAD_URL = (
-        "https://github.com/snakers4/silero-vad/releases/download/v6.2.1/silero_vad.onnx"
-    )
-
     def __init__(
         self,
-        model_path: str | None = None,
         threshold: float = 0.5,
         threshold_low: float = 0.2,
         min_silence_duration_ms: int = 1000,
@@ -124,71 +111,78 @@ class SileroVADProvider(VADProvider):
         初始化 Silero VAD Provider。
 
         Args:
-            model_path: ONNX 模型文件路径，None 则从默认路径加载（不存在则自动下载）
             threshold: 高阈值（speech_prob >= threshold → 有声）
             threshold_low: 低阈值（speech_prob <= threshold_low → 无声）
             min_silence_duration_ms: 最小静默持续时间（毫秒），超过则认为说完一句话
             frame_window_threshold: 滑动窗口阈值（连续 N 帧有声才认为有声）
         """
-        self._model_path = model_path or os.path.expanduser(self._DEFAULT_MODEL_PATH)
         self._threshold = threshold
         self._threshold_low = threshold_low
         self._silence_threshold_ms = min_silence_duration_ms
         self._frame_window_threshold = frame_window_threshold
 
-        # 确保模型文件存在，不存在则自动下载
-        if not os.path.exists(self._model_path):
-            self._download_model()
+        # 从 silero-vad pip 包获取模型路径
+        model_path = self._get_model_path()
 
-        # 加载 ONNX 模型
         import onnxruntime
 
         opts = onnxruntime.SessionOptions()
         opts.inter_op_num_threads = 1
         opts.intra_op_num_threads = 1
         self._session: onnxruntime.InferenceSession = onnxruntime.InferenceSession(
-            self._model_path,
+            model_path,
             providers=["CPUExecutionProvider"],
             sess_options=opts,
         )
         logger.info(
             "[VAD] Silero VAD 已加载: path={}, threshold={}, threshold_low={}, silence_ms={}, window={}",
-            self._model_path,
+            model_path,
             threshold,
             threshold_low,
             min_silence_duration_ms,
             frame_window_threshold,
         )
 
-    def _download_model(self) -> None:
-        """自动下载 Silero VAD 模型到默认路径
+    def _get_model_path(self) -> str:
+        """从 silero-vad pip 包获取 ONNX 模型路径
 
-        使用 httpx 同步下载（约 2MB），创建父目录，超时 60s。
-        下载失败则抛出异常。
+        优先使用 importlib.resources（Python 3.9+），回退到手动构造路径。
+        silero-vad 包在 site-packages/silero_vad/data/ 下绑定了 silero_vad.onnx。
         """
-        os.makedirs(os.path.dirname(self._model_path), exist_ok=True)
-        logger.info(
-            "[VAD] 模型不存在，正在从 GitHub 下载: {} -> {}",
-            self._MODEL_DOWNLOAD_URL,
-            self._model_path,
-        )
-        with httpx.Client(timeout=60.0) as client:
-            with client.stream("GET", self._MODEL_DOWNLOAD_URL) as resp:
-                resp.raise_for_status()
-                with open(self._model_path, "wb") as f:
-                    for chunk in resp.iter_bytes(chunk_size=8192):
-                        f.write(chunk)
-        logger.info("[VAD] 模型下载完成: {}", self._model_path)
+        try:
+            from importlib.resources import files
+
+            ref = files("silero_vad") / "data" / "silero_vad.onnx"
+            # Python 3.9+：as_file 临时解压 zip/egg 中的文件
+            return str(ref)
+        except (ImportError, ModuleNotFoundError) as e:
+            raise RuntimeError(
+                "缺少依赖 silero-vad，请运行: pip install silero-vad onnxruntime"
+            ) from e
+        except Exception:
+            # 回退：手动构造路径（兼容旧版 Python 或特殊安装方式）
+            import os
+
+            try:
+                import silero_vad
+
+                return os.path.join(
+                    os.path.dirname(silero_vad.__file__), "data", "silero_vad.onnx"
+                )
+            except ImportError as e:
+                raise RuntimeError(
+                    "缺少依赖 silero-vad，请运行: pip install silero-vad onnxruntime"
+                ) from e
 
     def create_state(self) -> VADState:
         """创建 VAD 运行时状态（包含 Opus 解码器）"""
         return VADState(opus_decoder=opuslib_next.Decoder(16000, 1))
 
-    def is_vad(self, state: VADState, data: bytes) -> bool:
+    def is_vad(self, state: VADState, data: bytes, audio_format: str = "pcm") -> bool:
         """检测音频数据中的语音活动
 
         实现逻辑：
-        1. Opus → PCM → float32 归一化
+        1. 根据 audio_format 解码音频为 PCM int16
         2. 每次送入 512 样本给 ONNX 模型
         3. 双阈值 + 滑动窗口判断
         4. 更新 state.client_have_voice / state.client_voice_stop
@@ -199,13 +193,17 @@ class SileroVADProvider(VADProvider):
         if self._session is None:
             return False
 
-        decoder = state.opus_decoder
-        if decoder is None:
-            return False
-
         try:
-            # Opus 解码为 PCM（16kHz, 单声道, 960 样本/帧）
-            pcm_frame = decoder.decode(data, 960)
+            # Step 1: 解码音频为 PCM
+            if audio_format == "opus":
+                decoder = state.opus_decoder
+                if decoder is None:
+                    return False
+                pcm_frame = decoder.decode(data, 960)
+            else:
+                # PCM 格式：直接使用原始字节
+                pcm_frame = data
+
             # 累积到音频缓冲
             state.audio_buffer.extend(pcm_frame)
 
@@ -267,11 +265,8 @@ class SileroVADProvider(VADProvider):
 
             return client_have_voice
 
-        except opuslib_next.OpusError as e:
-            logger.warning("[VAD] Opus 解码错误: {}", e)
-            return False
         except Exception as e:
-            logger.warning("[VAD] 处理音频帧时出错: {}", e)
+            logger.warning("[VAD] 处理音频帧时出错 (format={}): {}", audio_format, e)
             return False
 
 
@@ -289,7 +284,6 @@ def create_vad_provider(config) -> VADProvider | None:
     if provider_name == "silero":
         cfg = config.silero
         return SileroVADProvider(
-            model_path=cfg.model_path or None,
             threshold=cfg.threshold,
             threshold_low=cfg.threshold_low,
             min_silence_duration_ms=cfg.min_silence_duration_ms,

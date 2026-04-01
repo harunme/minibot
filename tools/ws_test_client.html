@@ -356,8 +356,7 @@
           ⏹ 中止TTS
         </button>
       </div>
-      <button id="btnMic" class="btn-mic" onmousedown="micDown()" onmouseup="micUp()"
-              ontouchstart="micDown()" ontouchend="micUp()" disabled>
+      <button id="btnMic" class="btn-mic">
         🎙
       </button>
       <div class="controls-side">
@@ -397,7 +396,7 @@ let playing = false;
 let chunkSentCount = 0;      // 已发送音频块计数
 let lastChunkTime = 0;       // 上次收到音频块的时间
 
-    // 录音采样率（与 ASR 期望一致）
+// 录音采样率（与 ASR 期望一致）
 const REC_SAMPLE_RATE = 16000;
 // TTS 播放采样率（由服务端 hello 响应中的 audio_params.sample_rate 指定）
 let serverSampleRate = 24000;
@@ -596,7 +595,7 @@ function sendHello() {
     token: $token.value.trim(),
     audio_params: {
       format: 'pcm',
-      sample_rate: 24000,
+      sample_rate: REC_SAMPLE_RATE,  // 告知服务端客户端发送的音频参数（用于 ASR）
     }
   });
 }
@@ -638,6 +637,9 @@ function handleTextMessage(raw) {
       }
       setStatus('ok', `已认证 (${$deviceId.value})`);
       setControlsEnabled(true);
+      // 连接成功后自动开始持续录音，音频流直接送服务端 VAD 检测
+      startRecording();
+      sendListen('start');
       break;
 
     case 'stt': {
@@ -817,10 +819,8 @@ async function startRecording() {
     $levelBar.style.width = '0%';
     $chunkCount.textContent = '';
 
-    sendListen('start');
-
     $btnMic.classList.add('recording');
-    appendLog('🎙 开始录音...', 'log-info');
+    appendLog('🎙 持续监听中...', 'log-info');
 
   } catch (e) {
     appendLog(`麦克风获取失败: ${e.message}`, 'log-error');
@@ -830,8 +830,6 @@ async function startRecording() {
 function stopRecording() {
   if (!recording) return;
   recording = false;
-
-  sendListen('stop');
 
   if (scriptProcessor) {
     try {
@@ -851,33 +849,8 @@ function stopRecording() {
   appendLog('🎙 停止录音 (共发送 ' + chunkSentCount + ' 块)', 'log-info');
 }
 
-function micDown() {
-  if (!connected) return;
-  startRecording();
-}
-
-function micUp() {
-  stopRecording();
-}
-
 // Prevent context menu on long-press (mobile)
 document.getElementById('btnMic').addEventListener('contextmenu', e => e.preventDefault());
-
-// ============================================================
-// Keyboard shortcut: Space = push-to-talk
-// ============================================================
-document.addEventListener('keydown', (e) => {
-  if (e.code === 'Space' && !e.repeat && connected && document.activeElement.tagName !== 'INPUT') {
-    e.preventDefault();
-    micDown();
-  }
-});
-document.addEventListener('keyup', (e) => {
-  if (e.code === 'Space' && document.activeElement.tagName !== 'INPUT') {
-    e.preventDefault();
-    micUp();
-  }
-});
 </script>
 </body>
 </html>

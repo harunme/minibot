@@ -180,7 +180,7 @@ class VolcengineTTSProvider(TTSProvider):
 
                 resp_data = response.json()
                 code = resp_data.get("code")
-                logger.debug("[TTS] 响应: {}", resp_data)
+                # logger.debug("[TTS] 响应: {}", resp_data)
                 # code=1000 或 code=3000 均表示成功（不同集群格式）
                 if code and code not in (1000, 3000):
                     logger.warning("[TTS] 服务端错误: code={}, message={}", code, resp_data.get("message"))

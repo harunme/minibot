@@ -18,9 +18,8 @@ from nanobot.providers.vad import (
 
 @pytest.fixture(autouse=True)
 def mock_vad_filesystem():
-    """Mock os.path.exists 和 onnxruntime，阻止自动下载模型"""
-    with patch("os.path.exists", return_value=True), \
-         patch("onnxruntime.InferenceSession", return_value=MagicMock()):
+    """Mock onnxruntime，阻止实际加载 ONNX 模型"""
+    with patch("onnxruntime.InferenceSession", return_value=MagicMock()):
         yield
 
 
@@ -48,11 +47,10 @@ class TestVADState:
 class TestSileroVADProvider:
     """Silero VAD Provider 测试"""
 
-    def test_init_with_model_path(self):
-        """测试带模型路径的初始化（Mock ONNX Session）"""
+    def test_init_with_threshold_params(self):
+        """测试带阈值参数的初始化（Mock ONNX Session）"""
         # autouse fixture patches onnxruntime → _session 为 MagicMock
         provider = SileroVADProvider(
-            model_path="/fake/path/silero_vad.onnx",
             threshold=0.6,
             threshold_low=0.3,
             min_silence_duration_ms=500,
@@ -64,11 +62,10 @@ class TestSileroVADProvider:
         assert provider._silence_threshold_ms == 500
         assert provider._frame_window_threshold == 5
 
-    def test_init_without_model_path(self):
-        """测试无模型路径且下载失败时抛出异常"""
-        with patch("os.path.exists", return_value=False), \
-             patch.object(SileroVADProvider, "_download_model", side_effect=Exception("下载失败")):
-            with pytest.raises(Exception, match="下载失败"):
+    def test_init_missing_silero_vad_package(self):
+        """测试 silero-vad 包未安装时抛出 RuntimeError"""
+        with patch.dict("sys.modules", {"silero_vad": None}):
+            with pytest.raises(RuntimeError, match="缺少依赖 silero-vad"):
                 SileroVADProvider()
 
     def test_create_state(self):
@@ -95,18 +92,11 @@ class TestSileroVADProvider:
         assert state.client_have_voice is False
         assert state.client_voice_stop is False
 
-    def test_is_vad_no_session(self):
-        """测试无模型时抛出异常（而不是静默返回 False）"""
-        with patch("os.path.exists", return_value=False), \
-             patch.object(SileroVADProvider, "_download_model", side_effect=Exception("下载失败")):
-            with pytest.raises(Exception):
-                SileroVADProvider()
-
     def test_is_vad_no_decoder(self):
-        """测试无 Opus 解码器时 is_vad 返回 False"""
-        provider = SileroVADProvider(model_path="/any/path")
+        """测试无 Opus 解码器时 is_vad 返回 False（Opus 格式）"""
+        provider = SileroVADProvider()
         state = VADState(opus_decoder=None)
-        result = provider.is_vad(state, b"\x00\x01\x02\x03")
+        result = provider.is_vad(state, b"\x00\x01\x02\x03", audio_format="opus")
         assert result is False
 
     def test_is_vad_with_session_and_decoder(self):
@@ -118,7 +108,6 @@ class TestSileroVADProvider:
         )
         with patch("onnxruntime.InferenceSession", return_value=mock_session):
             provider = SileroVADProvider(
-                model_path="/fake/silero_vad.onnx",
                 threshold=0.5,
                 threshold_low=0.2,
                 frame_window_threshold=1,
@@ -144,7 +133,6 @@ class TestCreateVADProvider:
         config = VADConfig(
             provider="silero",
             silero=SileroVADConfig(
-                model_path="/fake/silero.onnx",
                 threshold=0.6,
                 threshold_low=0.25,
                 min_silence_duration_ms=800,

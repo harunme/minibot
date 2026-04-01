@@ -136,20 +136,18 @@ class VolcengineTTSConfig(Base):
 class SileroVADConfig(Base):
     """Silero VAD 配置（V1 VADProvider 使用）
 
-    模型下载：https://github.com/snakers4/silero-vad/releases
-    将 silero_vad.onnx 放到配置路径下，model_path 指向该文件即可。
+    模型由 pip 包 `silero-vad` 绑定提供，无需手动配置。
 
     参数说明：
-    - threshold: 高阈值，speech_prob >= threshold → 有声（默认 0.5）
-    - threshold_low: 低阈值，speech_prob <= threshold_low → 无声（默认 0.2）
+    - threshold: 高阈值，speech_prob >= threshold → 有声（默认 0.3，更低更灵敏）
+    - threshold_low: 低阈值，speech_prob <= threshold_low → 无声（默认 0.1）
     - min_silence_duration_ms: 最小静默持续时间（毫秒），超过则认为说完一句话
     - frame_window_threshold: 滑动窗口阈值，连续 N 帧有声才认为有声（防噪声抖动）
     """
 
-    model_path: str = ""  # ONNX 模型文件路径，留空则 is_vad 始终返回 False（开发/测试用）
-    threshold: float = 0.5
-    threshold_low: float = 0.2
-    min_silence_duration_ms: int = 1000
+    threshold: float = 0.3
+    threshold_low: float = 0.1
+    min_silence_duration_ms: int = 500
     frame_window_threshold: int = 3
 
 
@@ -183,7 +181,7 @@ class WebSocketChannelConfig(Base):
     auth_key: str = ""  # 认证密钥，为空则跳过认证（开发模式）
     max_connections: int = 100
     timeout_seconds: int = 120  # 无活动超时（秒）
-    audio_format: str = "opus"
+    audio_format: str = "pcm"
     tts_sample_rate: int = 24000  # TTS 输出采样率（与客户端 AudioContext 匹配）
     allow_from: list[str] = ["*"]
 
