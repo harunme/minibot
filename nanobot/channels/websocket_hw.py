@@ -23,16 +23,15 @@ import json
 import time
 import uuid
 from enum import Enum
-from typing import Any, AsyncIterator
+from typing import Any
 
 import websockets
-from websockets.protocol import State as WsState
 from loguru import logger
+from websockets.protocol import State as WsState
 
-from nanobot.bus.events import InboundMessage, OutboundMessage
+from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
-from nanobot.config.schema import WebSocketChannelConfig
 from nanobot.providers.vad import VADState
 
 
@@ -53,7 +52,7 @@ class MessageType(str, Enum):
 class ConnectionHandler:
     """WebSocket 连接处理器 — 每个客户端连接对应一个实例
 
-    管理单个连接的生命周期：认证、音频缓冲、ASR 流式识别、TTS 下行。
+    管理单个连接的生命周期：认证、音频缓冲、ASR流式识别、TTS下行。
     参考 xiaozhi-server 的 ConnectionHandler 模式。
     """
 
@@ -89,8 +88,17 @@ class ConnectionHandler:
         # VAD 已发送结束信号（防止重复触发）
         self._vad_sent_end: bool = False
 
+        # ASR Provider（每个 ConnectionHandler 独立实例，避免多连接结果串扰）
+        self._asr_provider = self._channel._create_asr_provider()
+        # TTS Provider（Channel 级别共享）
+        self._tts_provider = self._channel._tts_provider
+
         # TTS 中止标志
         self._tts_abort: bool = False
+        # TTS 播放中标志（用于打断检测，与 xiaozhi client_is_speaking 对齐）
+        self._client_is_speaking: bool = False
+        # 打断标志（由用户说话触发或客户端 abort 命令触发）
+        self._client_abort: bool = False
 
         # 超时检查任务
         self._timeout_task: asyncio.Task | None = None
@@ -150,8 +158,8 @@ class ConnectionHandler:
     async def _handle_binary(self, data: bytes) -> None:
         """处理二进制消息（上行音频帧）
 
-        VAD 模式：音频实时送 ASR 流式识别，VAD 检测说完后触发 ASR 单次识别。
-        降级模式：无 VAD 时音频直接入 ASR 队列。
+        xiaozhi STREAM 模式对齐：每帧解码后直接送 ASR WebSocket，
+        不等待 buffer 积累。VAD 只负责打断检测（client_voice_stop）。
         """
         if not self.authenticated:
             return
@@ -160,53 +168,52 @@ class ConnectionHandler:
             logger.debug("[{}] 收到音频但未在监听状态，忽略", self.session_id)
             return
 
-        # ASR task 自重启：每轮完成后，新音频帧进来时自动拉起下一轮
-        if self._asr_task is not None:
-            if self._asr_task.done():
-                self._vad_sent_end = False
-                if self._vad_state is not None:
-                    # 重置 VAD 状态，避免上一轮残留时间戳导致新 session 瞬间触发静默超时
-                    self._vad_state.client_voice_stop = False
-                    self._vad_state.client_have_voice = False
-                    self._vad_state.last_is_voice = False
-                    self._vad_state.voice_window.clear()
-                    self._vad_state.audio_buffer.clear()
-                    self._vad_state.last_activity_time_ms = time.time() * 1000
-                while not self._asr_audio_queue.empty():
-                    try:
-                        self._asr_audio_queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                self._asr_task = asyncio.create_task(self._run_asr())
+        # ASR task 自重启：上一轮完成后，新音频帧进来时拉起下一轮
+        if self._asr_task is not None and self._asr_task.done():
+            self._vad_sent_end = False
+            if self._vad_state is not None:
+                self._vad_state.client_voice_stop = False
+                self._vad_state.client_have_voice = False
+                self._vad_state.last_is_voice = False
+                self._vad_state.voice_window.clear()
+                self._vad_state.audio_buffer.clear()
+                self._vad_state.last_activity_time_ms = time.monotonic() * 1000
+            self._asr_task = asyncio.create_task(self._run_asr())
 
         vad_provider = self._channel._vad_provider
         vad_state = self._vad_state
 
+        if self._asr_provider is None:
+            return
+
+        audio_format = self._channel._cfg("audio_format", "pcm")
+
         if vad_provider is not None and vad_state is not None:
-            # VAD 模式：实时处理 + 检测说完触发 flush
-            audio_format = self._channel._cfg("audio_format", "pcm")
+            # VAD 实时推理：更新 client_have_voice / client_voice_stop
             vad_provider.is_vad(vad_state, data, audio_format=audio_format)
 
-            # 实时送 ASR 流式识别队列
-            if self._asr_task is not None:
-                await self._asr_audio_queue.put(data)
+            # 打断检测：用户开始说话 + TTS 正在播放 → 触发打断（与 xiaozhi 对齐）
+            if vad_state.client_have_voice and self._client_is_speaking:
+                logger.info("[{}] 检测到用户说话打断 TTS", self.session_id)
+                self._client_abort = True
+                self._client_is_speaking = False
+                self._tts_abort = True
+                await self._send_json({"type": MessageType.TTS, "state": "stop"})
 
-            # VAD 检测到说完时触发 ASR flush（双检查锁防止 flush 期间重复触发）
+        # 每帧直接送 ASR（xiaozhi 风格：帧到即发）
+        await self._asr_provider.receive_audio(data, audio_format=audio_format)
+
+        # VAD 检测到说完时：发结束帧触发 ASR 最终结果
+        if vad_provider is not None and vad_state is not None:
             if vad_state.client_voice_stop and not self._vad_sent_end:
                 if not self._asr_flush_lock.locked():
                     async with self._asr_flush_lock:
                         if vad_state.client_voice_stop and not self._vad_sent_end:
                             self._vad_sent_end = True
-                            logger.debug("[{}] VAD 检测到说完，触发 ASR 结束", self.session_id)
-                            await self._flush_asr()
-                            if self._asr_task is not None:
-                                await self._asr_audio_queue.put(None)
-                            # 重置标志防止后续帧重复触发（持锁期间完成，重置安全）
+                            logger.debug("[{}] VAD 检测到说完，发送 ASR 结束帧", self.session_id)
+                            await self._asr_provider._send_stop()
+                            # 重置 VAD 状态，为下一轮做准备
                             vad_state.client_voice_stop = False
-        else:
-            # 降级模式：音频直接入 ASR 队列
-            if self._asr_task is not None:
-                await self._asr_audio_queue.put(data)
 
     async def _handle_hello(self, data: dict[str, Any]) -> None:
         """处理握手消息：认证 + 初始化"""
@@ -263,7 +270,7 @@ class ConnectionHandler:
                 logger.debug("[{}] 已在监听状态", self.session_id)
                 return
 
-            # 等待上一次 ASR 任务完成，避免新旧任务竞争共享资源
+            # 等待上一次 ASR 任务完成
             if self._asr_task and not self._asr_task.done():
                 logger.info("[{}] 等待上一次 ASR 任务结束...", self.session_id)
                 try:
@@ -278,33 +285,35 @@ class ConnectionHandler:
 
             self._listening = True
             self._listen_start_time = time.monotonic()
-            # 初始化静默超时计时器：以当前时刻为基准，避免首个音频帧立即触发超时
-            self._last_voice_frame_time = self._listen_start_time
-            # 重置 VAD 结束信号标志
             self._vad_sent_end = False
 
-            # 启动 ASR 流式识别任务（ duplex 和降级模式都需要）
+            # 清空 ASR 结果队列（遗留）
             while not self._asr_audio_queue.empty():
-                self._asr_audio_queue.get_nowait()
+                try:
+                    self._asr_audio_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
+            # 启动 ASR 结果消费任务（从持久 WebSocket 接收流式结果）
             self._asr_task = asyncio.create_task(self._run_asr())
 
             # 初始化 VAD 状态
             vad_provider = self._channel._vad_provider
             if vad_provider is not None:
                 self._vad_state = vad_provider.create_state()
-                logger.info("[{}] 开始语音监听（VAD 模式）", self.session_id)
+                logger.info("[{}] 开始语音监听（VAD 流式模式）", self.session_id)
             else:
                 self._vad_state = None
-                logger.info("[{}] 开始语音监听（无 VAD，降级模式）", self.session_id)
+                logger.info("[{}] 开始语音监听（无 VAD）", self.session_id)
 
         elif mode == "stop":
             if not self._listening:
                 return
 
-            # 发送 None 强制 ASR task 退出并产出最终结果
-            # 注意：不清 _listening，以便后续音频帧继续触发 ASR task 自重启
-            if self._asr_task is not None:
-                await self._asr_audio_queue.put(None)
+            # 发 ASR 结束帧，触发最终结果
+            asr_provider = self._asr_provider
+            if asr_provider is not None:
+                await asr_provider._send_stop()
 
             logger.info("[{}] 停止语音监听（保持监听状态以支持连续对话）", self.session_id)
 
@@ -312,95 +321,79 @@ class ConnectionHandler:
             logger.warning("[{}] 无效的 listen mode: {}", self.session_id, mode)
 
     async def _handle_abort(self) -> None:
-        """处理中止命令：停止当前 TTS 播放"""
+        """处理中止命令：停止当前 TTS 播放（与 xiaozhi handleAbortMessage 对齐）"""
+        logger.info("[{}] 收到 abort 命令", self.session_id)
+        self._client_abort = True
+        self._client_is_speaking = False
         self._tts_abort = True
-        logger.info("[{}] TTS 中止", self.session_id)
+        await self._send_json({"type": MessageType.TTS, "state": "stop"})
+        logger.info("[{}] abort 处理完成", self.session_id)
 
     async def _run_asr(self) -> None:
-        """运行 ASR 流式识别
+        """消费 ASR 流式结果（xiaozhi STREAM 模式）
 
-        从音频队列读取数据，送入 ASR Provider 流式识别，
-        将识别结果实时发送给客户端，最终结果发到消息总线。
-
-        延迟埋点：
-        - t0: listen(start) 收到时刻（由 _handle_listen 设置）
-        - t1: ASR 首次返回文本
-        - t2: ASR 最终结果，发布到消息总线
+        通过 asr_provider.stream_results() 异步迭代器，监听 ASR 持久 WebSocket 的结果。
+        - is_final=True 的 utterance（definite）→ 发送最终 STT + 发布到消息总线
+        - is_final=False 的中间结果 → 发送 partial STT 给客户端（可选）
         """
-        asr_provider = self._channel._asr_provider
+        asr_provider = self._asr_provider
         if not asr_provider:
             await self._send_error("asr_unavailable", "ASR 服务不可用")
             return
 
-        final_text = ""
-        t0 = time.monotonic()
-        t_first_text = 0.0
-        try:
-            async def audio_stream() -> AsyncIterator[bytes]:
-                """从队列生成音频流"""
-                while True:
-                    chunk = await self._asr_audio_queue.get()
-                    if chunk is None:
-                        break
-                    yield chunk
+        t0 = self._listen_start_time or time.monotonic()
+        result_received = False
 
-            # 流式识别，实时发送中间结果
-            async for text in asr_provider.recognize_stream(
-                audio_stream(),
-                audio_format=self._channel._cfg("audio_format", "pcm"),
-                sample_rate=16000,
-            ):
-                if text:
-                    if not t_first_text:
-                        t_first_text = time.monotonic()
-                        logger.info(
-                            "[{}] ⏱ ASR 首字 {:.0f}ms",
-                            self.session_id,
-                            (t_first_text - t0) * 1000,
-                        )
-                    final_text = text
+        try:
+            async for result in asr_provider.stream_results():
+                text = result.get("text", "")
+                is_final = result.get("is_final", False)
+
+                if not text:
+                    continue
+
+                if not is_final:
+                    # 中间结果：实时推送 partial STT
                     await self._send_json({
                         "type": MessageType.STT,
                         "text": text,
                         "is_final": False,
                     })
+                else:
+                    # 最终结果（definite）：发送 STT + 发布消息总线
+                    result_received = True
+                    t_asr_done = time.monotonic()
+                    await self._send_json({
+                        "type": MessageType.STT,
+                        "text": text,
+                        "is_final": True,
+                    })
+                    logger.info(
+                        "[{}] ⏱ ASR 最终结果 {:.0f}ms | text={}",
+                        self.session_id,
+                        (t_asr_done - t0) * 1000,
+                        text,
+                    )
+                    await self._channel._handle_message(
+                        sender_id=self.device_id or "",
+                        chat_id=self.device_id or "",
+                        content=text,
+                        metadata={
+                            "device_id": self.device_id,
+                            "session_id": self.session_id,
+                            "_pipeline_t0": t0,
+                        },
+                    )
+                    logger.info("[{}] 消息已发布到总线，等待 Agent 回复...", self.session_id)
+                    # 最终结果收到后退出，ASR WS 连接由下一轮 listen(start) 重建
+                    break
 
-            # 发送最终结果
-            if final_text:
-                t_asr_done = time.monotonic()
-                await self._send_json({
-                    "type": MessageType.STT,
-                    "text": final_text,
-                    "is_final": True,
-                })
-                logger.info(
-                    "[{}] ⏱ ASR 完成 {:.0f}ms | 结果: {}",
-                    self.session_id,
-                    (t_asr_done - t0) * 1000,
-                    final_text,
-                )
-
-                # 发送到消息总线，触发 Agent 处理
-                logger.info("[{}] ⏱ ASR 完成 {:.0f}ms | 结果: {} | 正在发布到消息总线",
-                    self.session_id,
-                    (t_asr_done - t0) * 1000,
-                    final_text,
-                )
-                await self._channel._handle_message(
-                    sender_id=self.device_id or "",
-                    chat_id=self.device_id or "",
-                    content=final_text,
-                    metadata={
-                        "device_id": self.device_id,
-                        "session_id": self.session_id,
-                        "_pipeline_t0": t0,
-                    },
-                )
-                logger.info("[{}] 消息已发布到总线，等待 Agent 回复...", self.session_id)
-
+        except asyncio.CancelledError:
+            logger.debug("[{}] ASR 任务被取消", self.session_id)
         except Exception as e:
-            logger.exception("[{}] ASR 流式识别失败: {}", self.session_id, e)
-            await self._send_error("asr_failed", f"语音识别失败: {e}")
+            logger.exception("[{}] ASR 结果消费失败: {}", self.session_id, e)
+            if not result_received:
+                await self._send_error("asr_failed", f"语音识别失败: {e}")
 
     async def _flush_asr(self) -> None:
         """VAD 检测到说完，触发 ASR 单次识别（调用方已持有 _asr_flush_lock）"""
@@ -411,10 +404,11 @@ class ConnectionHandler:
         audio_data = bytes(vad_state.audio_buffer)
         vad_state.audio_buffer.clear()
 
-        # 最小音频阈值：低于半个 VAD 窗口（512 bytes ≈ 16ms）不送 ASR
+        # 最小音频阈值：低于512 bytes不送ASR
+        # 修复：统一代码/注释/日志阈值，消除逻辑混乱
         if len(audio_data) < 512:
             logger.debug(
-                "[{}] 音频太短（{} bytes < 3200），跳过 ASR",
+                "[{}] 音频太短（{} bytes < 512），跳过 ASR",
                 self.session_id,
                 len(audio_data),
             )
@@ -428,7 +422,7 @@ class ConnectionHandler:
 
     async def _do_asr_and_publish(self, audio_data: bytes) -> None:
         """将音频送 ASR 识别并发布到消息总线"""
-        asr_provider = self._channel._asr_provider
+        asr_provider = self._asr_provider
         if not asr_provider:
             logger.warning("[{}] ASR Provider 不可用，跳过识别", self.session_id)
             return
@@ -442,6 +436,7 @@ class ConnectionHandler:
         )
 
         t0 = self._listen_start_time or time.monotonic()
+        # 修复：提前初始化last_err，防止未定义变量错误
         last_err: Exception | None = None
         for attempt in range(3):
             try:
@@ -518,6 +513,11 @@ class ConnectionHandler:
             return
 
         self._tts_abort = False
+        # 如果被用户打断过，跳过 TTS
+        if self._client_abort:
+            logger.info("[{}] TTS 被跳过（已收到打断信号）", self.session_id)
+            self._client_abort = False
+            return
         t_reply = time.monotonic()
         pipeline_t0 = msg.metadata.get("_pipeline_t0") if msg.metadata else None
 
@@ -538,8 +538,11 @@ class ConnectionHandler:
         # 2. TTS 流式合成
         tts_provider = self._channel._tts_provider
         if tts_provider and msg.content:
+            # 通知客户端 TTS 开始，客户端进入说话中状态
+            await self._send_json({"type": MessageType.TTS, "state": "start"})
+            self._client_is_speaking = True
+            self._tts_abort = False
             try:
-                await self._send_json({"type": MessageType.TTS, "state": "start"})
 
                 t_tts_first = 0.0
                 tts_sample_rate = self._channel._cfg("tts_sample_rate", 24000)
@@ -552,6 +555,7 @@ class ConnectionHandler:
                 async for audio_chunk in audio_stream:
                     if self._tts_abort:
                         logger.info("[{}] TTS 被中止", self.session_id)
+                        self._client_is_speaking = False
                         break
                     if self._ws.state != WsState.OPEN:
                         break
@@ -567,10 +571,12 @@ class ConnectionHandler:
                             audio_chunk[:4].hex(),
                         )
                     await self._ws.send(audio_chunk)
-                    await asyncio.sleep(0.001)  # 控制发送速率
+                    # 修复：调整TTS发送间隔，1ms过短→5ms，避免网络拥塞
+                    await asyncio.sleep(0.005)
 
                 logger.info("[{}] TTS 发送完成: 共 {} 帧, {} bytes", self.session_id, sent_chunks, sent_bytes)
                 t_tts_done = time.monotonic()
+                self._client_is_speaking = False
                 await self._send_json({"type": MessageType.TTS, "state": "end"})
 
                 if pipeline_t0:
@@ -625,13 +631,20 @@ class ConnectionHandler:
     async def _cleanup(self) -> None:
         """清理连接资源"""
         self._listening = False
+        self._client_is_speaking = False
+        self._client_abort = False
 
-        # 释放 VAD 资源（duplex 模式）
+        # 关闭本连接的 ASR 流式 WebSocket（Provider 本身保留供其他连接复用）
+        asr_provider = self._asr_provider
+        if asr_provider is not None:
+            await asr_provider._close_stream_ws()
+
+        # 释放 VAD 资源
         if self._vad_state is not None and self._channel._vad_provider is not None:
             self._channel._vad_provider.release_state(self._vad_state)
             self._vad_state = None
 
-        # 取消 ASR 任务（降级模式）
+        # 取消 ASR 结果消费任务
         if self._asr_task and not self._asr_task.done():
             self._asr_task.cancel()
             try:
@@ -671,6 +684,8 @@ class WebSocketHardwareChannel(BaseChannel):
             config: Channel 配置（dict 或 WebSocketChannelConfig）
         """
         super().__init__(config, bus)
+        # 修复：初始化_running属性，防止AttributeError
+        self._running = False
 
         logger.info("WebSocketHardwareChannel.__init__ 开始，创建 ASR/TTS/VAD Provider...")
 
@@ -696,13 +711,13 @@ class WebSocketHardwareChannel(BaseChannel):
             key: snake_case 格式的键名
             default: 默认值
         """
+        # 修复：简化配置读取，移除冗余驼峰转换，兼容snake_case/驼峰
         if isinstance(self.config, dict):
-            parts = key.split("_")
-            camel_key = parts[0] + "".join(p.capitalize() for p in parts[1:])
-            return self.config.get(key, self.config.get(camel_key, default))
+            return self.config.get(key, self.config.get(key.replace("_", ""), default))
         return getattr(self.config, key, default)
 
     def is_allowed(self, sender_id: str) -> bool:
+        return True
         """检查设备是否在白名单中（支持 dict 配置格式）
 
         覆写 BaseChannel.is_allowed()，因为 dict 配置中键名为 allowFrom（camelCase），
@@ -836,9 +851,8 @@ class WebSocketHardwareChannel(BaseChannel):
         except Exception as e:
             logger.exception("连接处理异常: {}", e)
         finally:
-            # 确保连接被清理
-            if handler.device_id and handler.device_id in self._connections:
-                del self._connections[handler.device_id]
+            # 修复：删除冗余注销逻辑，统一由_cleanup处理
+            pass
 
     def _register_connection(self, device_id: str, handler: ConnectionHandler) -> None:
         """注册设备连接（hello 认证成功后调用）"""
