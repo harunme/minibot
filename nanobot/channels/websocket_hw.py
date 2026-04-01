@@ -169,6 +169,9 @@ class ConnectionHandler:
             return
 
         # ASR task 自重启：上一轮完成后，新音频帧进来时拉起下一轮
+        # 主动建立 ASR 连接，确保 receive_audio 调用时连接已就绪，
+        # 消除"旧 task 退出 → 新音频帧到达 → receive_audio 因 _stream_ws=None
+        # 静默跳过 → 音频丢失"的竞争窗口。
         if self._asr_task is not None and self._asr_task.done():
             self._vad_sent_end = False
             if self._vad_state is not None:
@@ -178,6 +181,11 @@ class ConnectionHandler:
                 self._vad_state.voice_window.clear()
                 self._vad_state.audio_buffer.clear()
                 self._vad_state.last_activity_time_ms = time.monotonic() * 1000
+            # 先主动建连，再启动 task（receive_audio 的双检查机制保证不重复建连）
+            try:
+                await self._asr_provider._stream_ws_connect()
+            except Exception:
+                pass
             self._asr_task = asyncio.create_task(self._run_asr())
 
         vad_provider = self._channel._vad_provider

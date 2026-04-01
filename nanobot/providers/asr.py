@@ -653,7 +653,14 @@ class VolcengineASRProvider(ASRProvider):
             logger.warning("[ASR] 流式 WebSocket 已关闭，尝试重连")
             self._stream_ws = None
             self._stream_ready = False
-            # 下一帧会触发重连
+            # 立即触发重连，避免竞争窗口内的后续音频帧被静默丢弃
+            #（旧 _stream_receiver 退出前，新音频帧已到达的场景）
+            try:
+                async with self._stream_connect_lock:
+                    if self._stream_ws is None:
+                        await self._stream_ws_connect()
+            except Exception as e:
+                logger.warning("[ASR] 重连失败: {}", e)
         except Exception as e:
             logger.warning("[ASR] 发送音频帧失败: {}", e)
 
@@ -682,6 +689,8 @@ class VolcengineASRProvider(ASRProvider):
         ws = self._stream_ws
         # 仅在流式连接已就绪时才发送
         if ws is None or not self._stream_ready:
+            logger.debug("[ASR] 结束帧跳过：连接未就绪（_stream_ws={}, _stream_ready={})",
+                self._stream_ws is not None, self._stream_ready)
             return
 
         try:
@@ -768,7 +777,15 @@ class VolcengineASRProvider(ASRProvider):
                     continue
 
                 if "result" in payload_msg:
-                    utterances = payload_msg["result"].get("utterances", [])
+                    result_data = payload_msg["result"]
+                    # prefetch=True 表示服务端认为语音已结束（无更多 utterance 会到来），
+                    # 将其作为最终结果发布，防止因缺少 definite=True 而丢消息（如"你在干什么"场景）。
+                    if result_data.get("prefetch") and result_data.get("text"):
+                        text = result_data["text"]
+                        logger.info("[ASR] 流式最终结果(prefetch): {}", text)
+                        await queue.put({"text": text, "is_final": True})
+                        break
+                    utterances = result_data.get("utterances", [])
                     for utterance in utterances:
                         if utterance.get("definite", False):
                             text = utterance["text"]
@@ -778,7 +795,7 @@ class VolcengineASRProvider(ASRProvider):
                             break
                     else:
                         # 非 definite utterance（中间结果），透传给客户端用于实时转写
-                        partial_text = payload_msg["result"].get("text", "")
+                        partial_text = result_data.get("text", "")
                         if partial_text:
                             current = partial_text
                             if current != self._last_logged_text:
