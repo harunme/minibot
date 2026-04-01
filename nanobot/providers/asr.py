@@ -31,10 +31,14 @@ from nanobot.config.schema import ASRConfig
 
 # 火山引擎 ASR WebSocket API 配置
 # 多语种模式使用 bigmodel_nostream，单语种使用 bigmodel
+# bigmodel_async 是优化版本：仅结果变化时返回，时延和rtf更优
 VOLCEENGINE_ASR_WS_URL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
+VOLCEENGINE_ASR_WS_URL_BIGMODEL_ASYNC = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
 VOLCEENGINE_ASR_WS_URL_MULTILINGUAL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream"
 # 资源 ID（固定值）
 VOLCEENGINE_ASR_RESOURCE_ID = "volc.bigasr.sauc.duration"
+# 目标单包大小：200ms PCM @ 16000Hz 16bit mono = 200/1000 * 16000 * 2 = 6400 字节
+TARGET_PACKET_SIZE = 6400
 
 
 class ASRProvider(ABC):
@@ -126,7 +130,11 @@ class VolcengineASRProvider(ASRProvider):
         self._access_key = access_key or ""
         self._language = language
         self._enable_multilingual = enable_multilingual
-        self._ws_url = VOLCEENGINE_ASR_WS_URL_MULTILINGUAL if enable_multilingual else VOLCEENGINE_ASR_WS_URL
+        # 多语种保持 bigmodel_nostream，单语种升级到 bigmodel_async 优化版
+        if enable_multilingual:
+            self._ws_url = VOLCEENGINE_ASR_WS_URL_MULTILINGUAL
+        else:
+            self._ws_url = VOLCEENGINE_ASR_WS_URL_BIGMODEL_ASYNC
         self._resource_id = VOLCEENGINE_ASR_RESOURCE_ID
         # Opus 解码器（用于 opus 格式音频输入）
         self._decoder = opuslib_next.Decoder(16000, 1)
@@ -139,6 +147,8 @@ class VolcengineASRProvider(ASRProvider):
         self._stream_receiver_task: asyncio.Task | None = None
         # 重连锁：防止并发多次 _stream_ws_connect() 造成竞争
         self._stream_connect_lock: asyncio.Lock = asyncio.Lock()
+        # PCM 缓存缓冲区：累积到约 200ms 再发送（符合官方性能推荐）
+        self._stream_pcm_buffer: bytes = b""
 
     async def recognize(
         self,
@@ -242,22 +252,35 @@ class VolcengineASRProvider(ASRProvider):
             return {"error": "响应数据长度不足"}
 
         header = res[:4]
+        header_size = (header[0] & 0x0F) * 4  # header_size 以 4 字节为单位
         message_type = header[1] >> 4
 
         # 服务端错误响应（message_type=0x0F）
-        if message_type == 0x0F:
-            code = int.from_bytes(res[4:8], "big", signed=False)
-            msg_length = int.from_bytes(res[8:12], "big", signed=False)
-            error_msg = json.loads(res[12:].decode("utf-8"))
+        if message_type == 0x0F:  # SERVER_ERROR_RESPONSE
+            code = int.from_bytes(res[header_size:header_size+4], "big", signed=False)
+            msg_length = int.from_bytes(res[header_size+4:header_size+8], "big", signed=False)
+            error_msg = json.loads(res[header_size+8:].decode("utf-8"))
             return {
                 "code": code,
                 "msg_length": msg_length,
                 "payload_msg": error_msg,
             }
 
-        # 正常 JSON 响应（跳过 12 字节协议头）
+        # 正常 JSON 响应: [header][4字节长度][payload]
+        # payload 起始 = 头部大小(header_size) + 4字节长度
+        # header_size 已经包含了 4 字节基本头，所以直接加上 4 字节长度字段
+        payload_offset = header_size + 4
+        # 找到第一个 '{' 字符的位置，从那里开始解析 JSON
+        # 火山引擎偶尔会在长度字段后有额外的填充字节，我们需要跳过它们找到实际 JSON 开始
         try:
-            json_data = res[12:].decode("utf-8")
+            # 从 payload_offset 开始查找第一个 '{'
+            payload_start = payload_offset
+            while payload_start < len(res) and res[payload_start] != ord('{'):
+                payload_start += 1
+            if payload_start >= len(res):
+                logger.error("[ASR] 未找到 JSON 起始位置，header_size={}, payload_offset={}", header_size, payload_offset)
+                return {"error": "JSON 起始位置未找到"}
+            json_data = res[payload_start:].decode("utf-8")
             result = json.loads(json_data)
             # 只在文本内容变化时记录，避免刷屏（火山引擎每 8ms 返回一次）
             current_text = result.get("result", {}).get("text", "")
@@ -268,6 +291,7 @@ class VolcengineASRProvider(ASRProvider):
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
             logger.error("[ASR] JSON 解析失败: {}", e)
             logger.error("[ASR] 原始数据: {}", res)
+            logger.error("[ASR] header_size={}, payload_offset={}", header_size, payload_offset)
             raise
 
     def _build_request(self, reqid: str) -> dict:
@@ -615,10 +639,10 @@ class VolcengineASRProvider(ASRProvider):
         *,
         audio_format: str = "opus",
     ) -> None:
-        """流式接收音频帧：每帧解码后立即发送到 ASR WebSocket
+        """流式接收音频帧：累积到约200ms再发送到 ASR WebSocket
 
-        与 xiaozhi STREAM 模式对齐：帧到即发，不等待 buffer 积累。
-        ASR 服务端靠自身 VAD 返回 partial/partial→final 结果。
+        按照火山引擎文档推荐，双向流式模式使用200ms单包性能最优。
+        累积多个Opus帧（每帧60ms）达到目标大小后一起发送。
 
         Args:
             audio_frame: 单帧音频数据（Opus 或 PCM）
@@ -642,12 +666,19 @@ class VolcengineASRProvider(ASRProvider):
             else:
                 pcm_frame = audio_frame
 
-            # gzip 压缩并发送
-            payload = gzip.compress(pcm_frame)
-            audio_request = bytearray(self._generate_audio_header())
-            audio_request.extend(len(payload).to_bytes(4, "big"))
-            audio_request.extend(payload)
-            await ws.send(bytes(audio_request))
+            # 累积PCM到缓冲区
+            self._stream_pcm_buffer += pcm_frame
+
+            # 当缓冲区达到目标大小（~200ms），一起发送
+            if len(self._stream_pcm_buffer) >= TARGET_PACKET_SIZE:
+                # gzip 压缩并发送
+                payload = gzip.compress(self._stream_pcm_buffer)
+                audio_request = bytearray(self._generate_audio_header())
+                audio_request.extend(len(payload).to_bytes(4, "big"))
+                audio_request.extend(payload)
+                await ws.send(bytes(audio_request))
+                # 清空缓冲区
+                self._stream_pcm_buffer = b""
 
         except websockets.exceptions.ConnectionClosed:
             logger.warning("[ASR] 流式 WebSocket 已关闭，尝试重连")
@@ -682,18 +713,26 @@ class VolcengineASRProvider(ASRProvider):
     async def _send_stop(self) -> None:
         """发送结束帧，通知 ASR 服务端语音已结束
 
-        等效于 xiaozhi 的 _send_stop_request()。
-        发完后 receiver 会继续收到最终结果（definite=True 的 utterance），
-        最终收到 None 时 stream_results() 退出。
+        在发送结束帧之前，先发送缓冲区中剩余的所有音频，保证不丢数据。
         """
         ws = self._stream_ws
         # 仅在流式连接已就绪时才发送
         if ws is None or not self._stream_ready:
-            logger.debug("[ASR] 结束帧跳过：连接未就绪（_stream_ws={}, _stream_ready={})",
+            logger.debug("[ASR] 结束帧跳过：连接未就绪（_stream_ws={}, _stream_ready={}",
                 self._stream_ws is not None, self._stream_ready)
             return
 
         try:
+            # 先发送缓冲区中剩余的所有音频
+            if len(self._stream_pcm_buffer) > 0:
+                payload = gzip.compress(self._stream_pcm_buffer)
+                audio_request = bytearray(self._generate_audio_header())
+                audio_request.extend(len(payload).to_bytes(4, "big"))
+                audio_request.extend(payload)
+                await ws.send(bytes(audio_request))
+                self._stream_pcm_buffer = b""
+
+            # 发送结束帧
             empty_payload = gzip.compress(b"")
             last_request = bytearray(self._generate_audio_header(last=True))
             last_request.extend(len(empty_payload).to_bytes(4, "big"))
@@ -721,6 +760,8 @@ class VolcengineASRProvider(ASRProvider):
         connect_id = str(uuid.uuid4())
         reqid = str(uuid.uuid4())
         self._last_logged_text = ""
+        # 清空PCM缓存，确保新连接开始是空的
+        self._stream_pcm_buffer = b""
 
         try:
             ws = await websockets.connect(
@@ -780,7 +821,8 @@ class VolcengineASRProvider(ASRProvider):
                     result_data = payload_msg["result"]
                     # prefetch=True 表示服务端认为语音已结束（无更多 utterance 会到来），
                     # 将其作为最终结果发布，防止因缺少 definite=True 而丢消息（如"你在干什么"场景）。
-                    if result_data.get("prefetch") and result_data.get("text"):
+                    # 注意：prefetch 字段在 audio_info 层，不在 result 层。
+                    if payload_msg.get("audio_info", {}).get("prefetch") and result_data.get("text"):
                         text = result_data["text"]
                         logger.info("[ASR] 流式最终结果(prefetch): {}", text)
                         await queue.put({"text": text, "is_final": True})
@@ -849,8 +891,9 @@ class VolcengineASRProvider(ASRProvider):
                 logger.debug("[ASR] Opus decoder 资源已释放")
             except Exception as e:
                 logger.debug("[AS] 释放 Opus decoder 时出错: {}", e)
-        # 重置日志追踪状态
+        # 重置日志追踪状态和缓存
         self._last_logged_text = ""
+        self._stream_pcm_buffer = b""
 
 
 # 工厂函数：基于配置创建 ASR Provider
