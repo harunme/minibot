@@ -262,6 +262,20 @@ class ConnectionHandler:
             if self._listening:
                 logger.debug("[{}] 已在监听状态", self.session_id)
                 return
+
+            # 等待上一次 ASR 任务完成，避免新旧任务竞争共享资源
+            if self._asr_task and not self._asr_task.done():
+                logger.info("[{}] 等待上一次 ASR 任务结束...", self.session_id)
+                try:
+                    await asyncio.wait_for(self._asr_task, timeout=3.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    logger.warning("[{}] 上一次 ASR 任务超时，强制取消", self.session_id)
+                    self._asr_task.cancel()
+                    try:
+                        await self._asr_task
+                    except asyncio.CancelledError:
+                        pass
+
             self._listening = True
             self._listen_start_time = time.monotonic()
             # 初始化静默超时计时器：以当前时刻为基准，避免首个音频帧立即触发超时

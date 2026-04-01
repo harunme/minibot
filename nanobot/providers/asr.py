@@ -351,9 +351,10 @@ class VolcengineASRProvider(ASRProvider):
                     logger.warning("[ASR] 初始化失败: {}", error_msg)
                     return None
 
-                # Opus 解码为 PCM
+                # 每次识别创建独立的 Opus decoder，避免跨会话状态污染
                 if audio_format == "opus":
-                    pcm_data = self._decoder.decode(audio_data, 960)
+                    local_decoder = opuslib_next.Decoder(16000, 1)
+                    pcm_data = local_decoder.decode(audio_data, 960)
                 else:
                     pcm_data = audio_data
 
@@ -440,6 +441,8 @@ class VolcengineASRProvider(ASRProvider):
         init_ok_event = asyncio.Event()
         connect_id = str(uuid.uuid4())
         reqid = str(uuid.uuid4())
+        # 重置日志追踪状态，避免跨会话日志被误过滤
+        self._last_logged_text = ""
 
         logger.debug("[ASR] 正在连接火山引擎 ASR WebSocket...")
         try:
@@ -466,9 +469,12 @@ class VolcengineASRProvider(ASRProvider):
 
                     Opus 格式音频先解码为 PCM，再分帧发送。
                     发送完所有音频后发送结束帧标识流结束。
+                    每次识别会话创建独立的 Opus decoder，避免跨会话状态污染。
                     """
                     sent_chunks = 0
                     total_bytes = 0
+                    # 每次识别会话创建独立的 Opus decoder
+                    local_decoder = opuslib_next.Decoder(16000, 1) if audio_format == "opus" else None
                     try:
                         # 等待初始化响应成功
                         try:
@@ -483,9 +489,9 @@ class VolcengineASRProvider(ASRProvider):
                                 logger.info("[ASR] 收到流结束信号，已发送 {} 块, {} bytes", sent_chunks, total_bytes)
                                 break
 
-                            # Opus 解码为 PCM
+                            # Opus 解码为 PCM（使用局部 decoder）
                             if audio_format == "opus":
-                                pcm_frame = self._decoder.decode(audio_chunk, 960)
+                                pcm_frame = local_decoder.decode(audio_chunk, 960)
                             else:
                                 pcm_frame = audio_chunk
 
@@ -604,12 +610,8 @@ class VolcengineASRProvider(ASRProvider):
                 logger.debug("[ASR] Opus decoder 资源已释放")
             except Exception as e:
                 logger.debug("[ASR] 释放 Opus decoder 时出错: {}", e)
-            try:
-                del self._decoder
-                self._decoder = None
-                logger.debug("[ASR] Opus decoder 资源已释放")
-            except Exception as e:
-                logger.debug("[ASR] 释放 Opus decoder 时出错: {}", e)
+        # 重置日志追踪状态
+        self._last_logged_text = ""
 
 
 # 工厂函数：基于配置创建 ASR Provider
