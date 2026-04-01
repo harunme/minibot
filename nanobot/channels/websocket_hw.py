@@ -32,6 +32,7 @@ from websockets.protocol import State as WsState
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
+from nanobot.channels.music_player import MusicPlayer
 from nanobot.providers.vad import VADState
 
 
@@ -47,6 +48,7 @@ class MessageType(str, Enum):
     TTS = "tts"
     REPLY = "reply"
     ERROR = "error"
+    MUSIC = "music"
 
 
 class ConnectionHandler:
@@ -603,6 +605,42 @@ class ConnectionHandler:
                     )
             except Exception as e:
                 logger.exception("[{}] TTS 合成失败: {}", self.session_id, e)
+
+        # 3. 音乐播放（msg.metadata["music"] = MP3 文件路径）
+        music_path = msg.metadata.get("music") if msg.metadata else None
+        if music_path:
+            await self._stream_music(music_path)
+
+    async def _stream_music(self, mp3_path: str) -> None:
+        """通过 WebSocket 发送音乐 PCM 流到客户端。
+
+        发送流程：music start(JSON) → PCM chunks(二进制) → music end(JSON)
+        """
+        if self._ws.state != WsState.OPEN:
+            logger.warning("[{}] WebSocket 已关闭，跳过音乐播放", self.session_id)
+            return
+        tts_sample_rate = self._channel._cfg("tts_sample_rate", 24000)
+        player = MusicPlayer(sample_rate=tts_sample_rate)
+        await self._send_json({"type": MessageType.MUSIC, "state": "start"})
+        self._client_is_speaking = True
+        try:
+            sent_bytes = 0
+            chunk_count = 0
+            async for pcm_chunk in player.stream(mp3_path):
+                if self._ws.state != WsState.OPEN:
+                    break
+                await self._ws.send(pcm_chunk)
+                sent_bytes += len(pcm_chunk)
+                chunk_count += 1
+                # 复用 TTS 的节流策略，避免网络拥塞
+                await asyncio.sleep(0.005)
+            logger.info("[{}] 音乐播放完成: {} chunks, {} bytes", self.session_id, chunk_count, sent_bytes)
+        except Exception as e:
+            logger.exception("[{}] 音乐播放失败: {}", self.session_id, e)
+        finally:
+            self._client_is_speaking = False
+            if self._ws.state == WsState.OPEN:
+                await self._send_json({"type": MessageType.MUSIC, "state": "end"})
 
     async def _send_json(self, data: dict[str, Any]) -> None:
         """发送 JSON 消息"""
