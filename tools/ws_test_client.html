@@ -455,6 +455,7 @@ let mediaStream = null;
 let scriptProcessor = null;
 let playQueue = [];
 let playing = false;
+let musicActive = false;  // 是否有音乐正在播放（与 TTS 独立）
 let chunkSentCount = 0;
 let lastChunkTime = 0;
 let heartbeatTimer = null;
@@ -856,6 +857,7 @@ function handleTextMessage(raw) {
         clearInterim();
         playQueue = [];
         playing = false;
+        musicActive = false;
         // 如果还在录音，先停止
         if (appState === AppState.LISTENING) {
           stopListening();
@@ -871,6 +873,30 @@ function handleTextMessage(raw) {
         }
       } else if (data.state === 'end') {
         appendLog('← TTS 结束', 'log-recv');
+        if (appState === AppState.SPEAKING && !musicActive) {
+          setAppState(AppState.IDLE);
+        }
+      }
+      break;
+
+    case 'music':
+      if (data.state === 'stop') {
+        appendLog('← MUSIC stop（清队列）', 'log-warn');
+        stopPlayback();
+        musicActive = false;
+        // TTS 结束后收到 music stop → 可以回 IDLE
+        if (appState === AppState.SPEAKING) {
+          setAppState(AppState.IDLE);
+        }
+      } else if (data.state === 'start') {
+        appendLog('← MUSIC 开始 🎵', 'log-recv');
+        musicActive = true;
+        // 清除之前的播放队列（避免残留）
+        playQueue = [];
+        playing = false;
+      } else if (data.state === 'end') {
+        appendLog('← MUSIC 结束', 'log-recv');
+        musicActive = false;
         if (appState === AppState.SPEAKING) {
           setAppState(AppState.IDLE);
         }

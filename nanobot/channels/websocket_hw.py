@@ -122,8 +122,10 @@ class ConnectionHandler:
                     await self._handle_binary(message)
         except websockets.ConnectionClosed as e:
             logger.info("[{}] 连接关闭: {}", self.session_id, e)
+        except asyncio.CancelledError:
+            logger.info("[{}] 连接被 CancelledError 取消", self.session_id)
         except Exception as e:
-            logger.exception("[{}] 连接异常: {}", self.session_id, e)
+            logger.exception("[{}] 连接异常: {} ({})", self.session_id, type(e).__name__, e)
         finally:
             await self._cleanup()
 
@@ -552,10 +554,15 @@ class ConnectionHandler:
                     (time.monotonic() - pipeline_t0) * 1000,
                 )
 
-        # 2. TTS 流式合成 + 音频下行（music PCM 直接拼接在 TTS 后面）
+        # 2. TTS 流式合成 + 音频下行
         tts_provider = self._channel._tts_provider
         music_path = msg.metadata.get("music") if msg.metadata else None
+        music_stop = msg.metadata.get("music_stop") if msg.metadata else None
+
         if tts_provider and msg.content:
+            # music_stop: 通知客户端清除上一轮残留的 playQueue，再开始 TTS
+            if music_stop:
+                await self._send_json({"type": MessageType.MUSIC, "state": "stop"})
             # 通知客户端 TTS 开始，客户端进入说话中状态
             await self._send_json({"type": MessageType.TTS, "state": "start"})
             self._client_is_speaking = True
@@ -607,8 +614,10 @@ class ConnectionHandler:
             except Exception as e:
                 logger.exception("[{}] TTS 合成失败: {}", self.session_id, e)
 
-        # 3. 音乐播放：TTS 结束后直接拼接 music PCM（无 music 标记，客户端按时间顺序播放）
+        # 3. 音乐播放：TTS 结束后直接拼接 music PCM（music start/end JSON 供客户端协调）
         if music_path and self._ws.state == WsState.OPEN:
+            await self._send_json({"type": MessageType.MUSIC, "state": "start"})
+            self._client_is_speaking = True
             tts_sample_rate = self._channel._cfg("tts_sample_rate", 24000)
             player = MusicPlayer(sample_rate=tts_sample_rate)
             sent_bytes = 0
@@ -620,6 +629,8 @@ class ConnectionHandler:
                 sent_bytes += len(pcm_chunk)
                 chunk_count += 1
                 await asyncio.sleep(0.005)
+            self._client_is_speaking = False
+            await self._send_json({"type": MessageType.MUSIC, "state": "end"})
             logger.info("[{}] 音乐 PCM 发送完成: {} chunks, {} bytes", self.session_id, chunk_count, sent_bytes)
 
     async def _send_json(self, data: dict[str, Any]) -> None:
