@@ -388,6 +388,9 @@ class ConnectionHandler:
                             "_pipeline_t0": t0,
                         },
                     )
+                    # 新一轮对话开始，清除打断状态，防止上一轮的 _client_abort 残留导致 skip TTS
+                    self._client_abort = False
+                    self._client_is_speaking = False
                     logger.info("[{}] 消息已发布到总线，等待 Agent 回复...", self.session_id)
                     # 最终结果收到后退出，ASR WS 连接由下一轮 listen(start) 重建
                     break

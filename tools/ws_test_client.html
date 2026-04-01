@@ -725,7 +725,7 @@ function resetConnection() {
   connected = false;
   connecting = false;
   ws = null;
-  if (recording) stopRecording();
+  if (recording) stopListening();
   stopPlayback();
   stopHeartbeat();
   clearProcessingTimer();
