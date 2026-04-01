@@ -79,9 +79,15 @@ class ConnectionHandler:
         self._listening: bool = False
         self._asr_task: asyncio.Task | None = None
         self._listen_start_time: float = 0.0  # listen(start) 时刻，用于管道延迟埋点
+        # ASR flush 锁，防止并发多次 _flush_asr 耗尽并发配额
+        self._asr_flush_lock: asyncio.Lock = asyncio.Lock()
+        # 静默超时兜底：记录最后有声帧时刻，用于静默超时强制送 ASR
+        self._last_voice_frame_time: float = 0.0
 
         # VAD 状态（duplex 模式下由 VADProvider.create_state() 创建）
         self._vad_state: VADState | None = None
+        # VAD 已发送结束信号（防止重复触发）
+        self._vad_sent_end: bool = False
 
         # TTS 中止标志
         self._tts_abort: bool = False
@@ -144,11 +150,8 @@ class ConnectionHandler:
     async def _handle_binary(self, data: bytes) -> None:
         """处理二进制消息（上行音频帧）
 
-        duplex 模式（有 VAD）：
-            - VAD 检测有声 → 追加到 state.audio_buffer
-            - VAD 检测说完 → 触发 _flush_asr()（ASR recognize）
-        无 VAD（降级）：
-            - 音频直接入 ASR 队列，由 _run_asr() 处理
+        VAD 模式：音频实时送 ASR 流式识别，VAD 检测说完后触发 ASR 单次识别。
+        降级模式：无 VAD 时音频直接入 ASR 队列。
         """
         if not self.authenticated:
             return
@@ -157,23 +160,53 @@ class ConnectionHandler:
             logger.debug("[{}] 收到音频但未在监听状态，忽略", self.session_id)
             return
 
+        # ASR task 自重启：每轮完成后，新音频帧进来时自动拉起下一轮
+        if self._asr_task is not None:
+            if self._asr_task.done():
+                self._vad_sent_end = False
+                if self._vad_state is not None:
+                    # 重置 VAD 状态，避免上一轮残留时间戳导致新 session 瞬间触发静默超时
+                    self._vad_state.client_voice_stop = False
+                    self._vad_state.client_have_voice = False
+                    self._vad_state.last_is_voice = False
+                    self._vad_state.voice_window.clear()
+                    self._vad_state.audio_buffer.clear()
+                    self._vad_state.last_activity_time_ms = time.time() * 1000
+                while not self._asr_audio_queue.empty():
+                    try:
+                        self._asr_audio_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                self._asr_task = asyncio.create_task(self._run_asr())
+
         vad_provider = self._channel._vad_provider
         vad_state = self._vad_state
 
         if vad_provider is not None and vad_state is not None:
-            # duplex 模式：VAD 检测
-            have_voice = vad_provider.is_vad(vad_state, data)
-            logger.debug("[{}] VAD have_voice={}", self.session_id, have_voice)
+            # VAD 模式：实时处理 + 检测说完触发 flush
+            audio_format = self._channel._cfg("audio_format", "pcm")
+            vad_provider.is_vad(vad_state, data, audio_format=audio_format)
 
-            # VAD 检测到说完，触发 ASR 识别
-            if vad_state.client_voice_stop:
-                asyncio.create_task(self._flush_asr())
-                # client_voice_stop 由 _flush_asr() 处理后重置
+            # 实时送 ASR 流式识别队列
+            if self._asr_task is not None:
+                await self._asr_audio_queue.put(data)
 
-            # 有声帧已由 VAD 追加到 state.audio_buffer，无需额外操作
+            # VAD 检测到说完时触发 ASR flush（双检查锁防止 flush 期间重复触发）
+            if vad_state.client_voice_stop and not self._vad_sent_end:
+                if not self._asr_flush_lock.locked():
+                    async with self._asr_flush_lock:
+                        if vad_state.client_voice_stop and not self._vad_sent_end:
+                            self._vad_sent_end = True
+                            logger.debug("[{}] VAD 检测到说完，触发 ASR 结束", self.session_id)
+                            await self._flush_asr()
+                            if self._asr_task is not None:
+                                await self._asr_audio_queue.put(None)
+                            # 重置标志防止后续帧重复触发（持锁期间完成，重置安全）
+                            vad_state.client_voice_stop = False
         else:
-            # 无 VAD（降级模式）：音频直接入 ASR 队列
-            await self._asr_audio_queue.put(data)
+            # 降级模式：音频直接入 ASR 队列
+            if self._asr_task is not None:
+                await self._asr_audio_queue.put(data)
 
     async def _handle_hello(self, data: dict[str, Any]) -> None:
         """处理握手消息：认证 + 初始化"""
@@ -204,14 +237,14 @@ class ConnectionHandler:
         # 注册连接到 Channel（踢掉同设备旧连接）
         self._channel._register_connection(device_id, self)
 
-        # 发送握手响应
-        audio_format = self._channel._cfg("audio_format", "pcm")
+        # 发送握手响应（告知客户端 TTS 输出格式）
         tts_sample_rate = self._channel._cfg("tts_sample_rate", 24000)
         await self._send_json({
             "type": MessageType.HELLO,
             "session_id": self.session_id,
             "audio_params": {
-                "format": audio_format,
+                # TTS 输出固定为 PCM 格式（浏览器可原生播放）
+                "format": "pcm",
                 "sample_rate": tts_sample_rate,
             },
         })
@@ -231,42 +264,35 @@ class ConnectionHandler:
                 return
             self._listening = True
             self._listen_start_time = time.monotonic()
+            # 初始化静默超时计时器：以当前时刻为基准，避免首个音频帧立即触发超时
+            self._last_voice_frame_time = self._listen_start_time
+            # 重置 VAD 结束信号标志
+            self._vad_sent_end = False
 
-            # 初始化 VAD 状态（duplex 模式）
+            # 启动 ASR 流式识别任务（ duplex 和降级模式都需要）
+            while not self._asr_audio_queue.empty():
+                self._asr_audio_queue.get_nowait()
+            self._asr_task = asyncio.create_task(self._run_asr())
+
+            # 初始化 VAD 状态
             vad_provider = self._channel._vad_provider
             if vad_provider is not None:
                 self._vad_state = vad_provider.create_state()
-                logger.info("[{}] 开始语音监听（duplex + VAD）", self.session_id)
+                logger.info("[{}] 开始语音监听（VAD 模式）", self.session_id)
             else:
                 self._vad_state = None
-                # 无 VAD（降级模式）：清空队列 + 启动 ASR 流式识别任务
-                while not self._asr_audio_queue.empty():
-                    self._asr_audio_queue.get_nowait()
-                self._asr_task = asyncio.create_task(self._run_asr())
                 logger.info("[{}] 开始语音监听（无 VAD，降级模式）", self.session_id)
 
         elif mode == "stop":
             if not self._listening:
                 return
-            self._listening = False
 
-            # duplex 模式：释放 VAD 资源
-            if self._vad_state is not None and self._channel._vad_provider is not None:
-                # 如果有缓冲音频，先取走再释放（避免 _flush_asr 读到 None）
-                if self._vad_state.audio_buffer:
-                    audio_data = bytes(self._vad_state.audio_buffer)
-                    vad_provider = self._channel._vad_provider
-                    self._channel._vad_provider.release_state(self._vad_state)
-                    self._vad_state = None
-                    asyncio.create_task(self._flush_asr_from_buffer(audio_data))
-                else:
-                    self._channel._vad_provider.release_state(self._vad_state)
-                    self._vad_state = None
-            # 降级模式：发送 None 强制 ASR task 退出
-            elif self._asr_task is not None:
+            # 发送 None 强制 ASR task 退出并产出最终结果
+            # 注意：不清 _listening，以便后续音频帧继续触发 ASR task 自重启
+            if self._asr_task is not None:
                 await self._asr_audio_queue.put(None)
 
-            logger.info("[{}] 停止语音监听", self.session_id)
+            logger.info("[{}] 停止语音监听（保持监听状态以支持连续对话）", self.session_id)
 
         else:
             logger.warning("[{}] 无效的 listen mode: {}", self.session_id, mode)
@@ -293,7 +319,7 @@ class ConnectionHandler:
             return
 
         final_text = ""
-        t0 = self._listen_start_time or time.monotonic()
+        t0 = time.monotonic()
         t_first_text = 0.0
         try:
             async def audio_stream() -> AsyncIterator[bytes]:
@@ -307,7 +333,7 @@ class ConnectionHandler:
             # 流式识别，实时发送中间结果
             async for text in asr_provider.recognize_stream(
                 audio_stream(),
-                audio_format=self._channel._cfg("audio_format", "opus"),
+                audio_format=self._channel._cfg("audio_format", "pcm"),
                 sample_rate=16000,
             ):
                 if text:
@@ -363,22 +389,22 @@ class ConnectionHandler:
             await self._send_error("asr_failed", f"语音识别失败: {e}")
 
     async def _flush_asr(self) -> None:
-        """VAD 检测到说完，触发 ASR 单次识别
-
-        将 VAD 缓冲的音频送入 ASR recognize()，识别完成后：
-        1. 发送 stt 结果给客户端
-        2. 发布到消息总线触发 Agent
-        3. 清空缓冲并重置 VAD 状态，继续接收下一轮音频
-        """
+        """VAD 检测到说完，触发 ASR 单次识别（调用方已持有 _asr_flush_lock）"""
         vad_state = self._vad_state
         if vad_state is None or not vad_state.audio_buffer:
             return
 
-        # 提取并清空缓冲
         audio_data = bytes(vad_state.audio_buffer)
         vad_state.audio_buffer.clear()
-        # 重置 VAD 说完标志（允许继续接收音频）
-        vad_state.client_voice_stop = False
+
+        # 最小音频阈值：低于半个 VAD 窗口（512 bytes ≈ 16ms）不送 ASR
+        if len(audio_data) < 512:
+            logger.debug(
+                "[{}] 音频太短（{} bytes < 3200），跳过 ASR",
+                self.session_id,
+                len(audio_data),
+            )
+            return
 
         await self._do_asr_and_publish(audio_data)
 
@@ -393,42 +419,71 @@ class ConnectionHandler:
             logger.warning("[{}] ASR Provider 不可用，跳过识别", self.session_id)
             return
 
+        audio_format = self._channel._cfg("audio_format", "pcm")
+        logger.debug(
+            "[{}] ASR 送识: len={} bytes, format={}",
+            self.session_id,
+            len(audio_data),
+            audio_format,
+        )
+
         t0 = self._listen_start_time or time.monotonic()
-        try:
-            text = await asr_provider.recognize(
-                audio_data,
-                audio_format=self._channel._cfg("audio_format", "opus"),
-                sample_rate=16000,
-            )
-            if text:
-                t_asr_done = time.monotonic()
-                await self._send_json({
-                    "type": MessageType.STT,
-                    "text": text,
-                    "is_final": True,
-                })
-                logger.info(
-                    "[{}] ⏱ ASR 完成 {:.0f}ms | 结果: {}",
-                    self.session_id,
-                    (t_asr_done - t0) * 1000,
-                    text,
+        last_err: Exception | None = None
+        for attempt in range(3):
+            try:
+                text = await asr_provider.recognize(
+                    audio_data,
+                    audio_format=audio_format,
+                    _sample_rate=16000,
                 )
-                await self._channel._handle_message(
-                    sender_id=self.device_id or "",
-                    chat_id=self.device_id or "",
-                    content=text,
-                    metadata={
-                        "device_id": self.device_id,
-                        "session_id": self.session_id,
-                        "_pipeline_t0": t0,
-                    },
-                )
-                logger.info("[{}] 消息已发布到总线，等待 Agent 回复...", self.session_id)
-            else:
-                logger.debug("[{}] ASR 未能识别出文本（音频可能无效）", self.session_id)
-        except Exception as e:
-            logger.warning("[{}] ASR 识别失败: {}", self.session_id, e)
-            await self._send_error("asr_failed", str(e))
+                if text:
+                    t_asr_done = time.monotonic()
+                    await self._send_json({
+                        "type": MessageType.STT,
+                        "text": text,
+                        "is_final": True,
+                    })
+                    logger.info(
+                        "[{}] ⏱ ASR 完成 {:.0f}ms | 结果: {}",
+                        self.session_id,
+                        (t_asr_done - t0) * 1000,
+                        text,
+                    )
+                    await self._channel._handle_message(
+                        sender_id=self.device_id or "",
+                        chat_id=self.device_id or "",
+                        content=text,
+                        metadata={
+                            "device_id": self.device_id,
+                            "session_id": self.session_id,
+                            "_pipeline_t0": t0,
+                        },
+                    )
+                    logger.info("[{}] 消息已发布到总线，等待 Agent 回复...", self.session_id)
+                else:
+                    logger.debug("[{}] ASR 未能识别出文本（音频可能无效）", self.session_id)
+                return
+            except Exception as e:
+                err_str = str(e)
+                # 45000292 = 火山引擎 ASR 并发配额超限，等待后重试
+                if "45000292" in err_str or "quota" in err_str.lower():
+                    wait = 2 ** attempt
+                    logger.warning(
+                        "[{}] ASR 并发配额超限（{}/3），等待 {}s 后重试",
+                        self.session_id,
+                        attempt + 1,
+                        wait,
+                    )
+                    await asyncio.sleep(wait)
+                    last_err = e
+                    continue
+                else:
+                    last_err = e
+                    break
+
+        # 所有重试均失败
+        logger.warning("[{}] ASR 识别失败: {}", self.session_id, last_err)
+        await self._send_error("asr_failed", str(last_err))
 
     async def send_reply(self, msg: OutboundMessage) -> None:
         """发送 Agent 回复给客户端
@@ -473,11 +528,10 @@ class ConnectionHandler:
                 await self._send_json({"type": MessageType.TTS, "state": "start"})
 
                 t_tts_first = 0.0
-                audio_format = self._channel._cfg("audio_format", "pcm")
                 tts_sample_rate = self._channel._cfg("tts_sample_rate", 24000)
-                logger.info("[{}] TTS 开始合成: format={}, sample_rate={}", self.session_id, audio_format, tts_sample_rate)
+                logger.info("[{}] TTS 开始合成: format=pcm, sample_rate={}", self.session_id, tts_sample_rate)
                 audio_stream = tts_provider.synthesize(
-                    msg.content, audio_format=audio_format, sample_rate=tts_sample_rate
+                    msg.content, audio_format="pcm", sample_rate=tts_sample_rate
                 )
                 sent_chunks = 0
                 sent_bytes = 0
@@ -724,7 +778,7 @@ class WebSocketHardwareChannel(BaseChannel):
         self._running = False
 
         # 关闭所有活跃连接
-        for device_id, handler in list(self._connections.items()):
+        for _device_id, handler in list(self._connections.items()):
             try:
                 await handler._close()
             except Exception:

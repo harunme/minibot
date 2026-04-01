@@ -441,7 +441,7 @@ class VolcengineASRProvider(ASRProvider):
         connect_id = str(uuid.uuid4())
         reqid = str(uuid.uuid4())
 
-        logger.info("[ASR] 正在连接火山引擎 ASR WebSocket...")
+        logger.debug("[ASR] 正在连接火山引擎 ASR WebSocket...")
         try:
             async with websockets.connect(
                 self._ws_url,
@@ -450,7 +450,7 @@ class VolcengineASRProvider(ASRProvider):
                 ping_timeout=None,
                 close_timeout=10,
             ) as ws:
-                logger.info("[ASR] WebSocket 连接成功，发送初始化请求")
+                logger.debug("[ASR] WebSocket 连接成功，发送初始化请求")
 
                 # 发送初始化请求（gzip 压缩 + 二进制帧）
                 request_params = self._build_request(reqid)
@@ -476,7 +476,7 @@ class VolcengineASRProvider(ASRProvider):
                         except asyncio.TimeoutError:
                             logger.warning("[ASR] 等待初始化响应超时，放弃发送")
                             return
-                        logger.info("[ASR] 初始化成功，开始发送音频")
+                        logger.debug("[ASR] 初始化成功，开始发送音频")
 
                         async for audio_chunk in audio_stream:
                             if audio_chunk is None:
@@ -499,7 +499,7 @@ class VolcengineASRProvider(ASRProvider):
                             sent_chunks += 1
                             total_bytes += len(pcm_frame)
                             if sent_chunks == 1:
-                                logger.info("[ASR] 首块音频: {} bytes, 前4字节hex={}", len(audio_chunk), audio_chunk[:4].hex())
+                                logger.debug("[ASR] 首块音频: {} bytes, 前4字节hex={}", len(audio_chunk), audio_chunk[:4].hex())
 
                             await asyncio.sleep(0.02)  # 控制发送速率
 
