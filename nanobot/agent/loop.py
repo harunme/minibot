@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import os
 import time
 from contextlib import AsyncExitStack, nullcontext
@@ -15,20 +14,19 @@ from loguru import logger
 
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.memory import MemoryConsolidator
-from nanobot.agent.runner import AgentRunSpec, AgentRunner
+from nanobot.agent.runner import AgentRunner, AgentRunSpec
+from nanobot.agent.skills import BUILTIN_SKILLS_DIR
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.cron import CronTool
-from nanobot.agent.skills import BUILTIN_SKILLS_DIR
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.message import MessageTool
-from nanobot.agent.tools.music_player import MusicPlayerTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
-from nanobot.command import CommandContext, CommandRouter, register_builtin_commands
 from nanobot.bus.queue import MessageBus
+from nanobot.command import CommandContext, CommandRouter, register_builtin_commands
 from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import Session, SessionManager
 
@@ -145,7 +143,6 @@ class AgentLoop:
         self.tools.register(WebSearchTool(config=self.web_search_config, proxy=self.web_proxy))
         self.tools.register(WebFetchTool(proxy=self.web_proxy))
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
-        self.tools.register(MusicPlayerTool(send_callback=self.bus.publish_outbound))
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
             self.tools.register(
@@ -174,12 +171,18 @@ class AgentLoop:
         finally:
             self._mcp_connecting = False
 
-    def _set_tool_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
+    def _set_tool_context(
+        self,
+        channel: str,
+        chat_id: str,
+        message_id: str | None = None,
+        session: Any = None,
+    ) -> None:
         """Update context for all tools that need routing info."""
-        for name in ("message", "spawn", "cron", "music_player_play"):
+        for name in ("message", "spawn", "cron"):
             if tool := self.tools.get(name):
                 if hasattr(tool, "set_context"):
-                    tool.set_context(channel, chat_id, *([message_id] if name == "message" else []))
+                    tool.set_context(channel, chat_id)
 
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
@@ -210,6 +213,7 @@ class AgentLoop:
         channel: str = "cli",
         chat_id: str = "direct",
         message_id: str | None = None,
+        session: Any = None,
     ) -> tuple[str | None, list[str], list[dict]]:
         """Run the agent iteration loop.
 
@@ -253,9 +257,39 @@ class AgentLoop:
             for tc in tool_calls:
                 args_str = json.dumps(tc.arguments, ensure_ascii=False)
                 logger.info("Tool call: {}({})", tc.name, args_str[:200])
-            self._set_tool_context(channel, chat_id, message_id)
 
-        result = await self.runner.run(AgentRunSpec(
+            self._set_tool_context(channel, chat_id, message_id, session)
+
+        # Monkey-patch provider to log LLM prompts & responses for debugging.
+        _orig_chat = self.provider.chat_with_retry
+        _orig_stream = self.provider.chat_stream_with_retry
+
+        async def _logged_chat(**kw):
+            logger.info("[LLM PROMPT] messages={}", json.dumps(kw.get("messages"), ensure_ascii=False, indent=2))
+            resp = await _orig_chat(**kw)
+            logger.info("[LLM RESPONSE] content={}", json.dumps(resp.content, ensure_ascii=False) if resp.content else None)
+            return resp
+
+        async def _logged_stream(**kw):
+            logger.info("[LLM PROMPT] messages={}", json.dumps(kw.get("messages"), ensure_ascii=False, indent=2))
+            _buf = ""
+
+            async def _on_delta(delta: str):
+                nonlocal _buf
+                _buf += delta
+                orig = kw.get("on_content_delta")
+                if orig:
+                    await orig(delta)
+
+            resp = await _orig_stream(**{**kw, "on_content_delta": _on_delta})
+            logger.info("[LLM RESPONSE] content={}", json.dumps(_buf, ensure_ascii=False))
+            return resp
+
+        self.provider.chat_with_retry = _logged_chat
+        self.provider.chat_stream_with_retry = _logged_stream
+
+        try:
+            result = await self.runner.run(AgentRunSpec(
             initial_messages=initial_messages,
             tools=self.tools,
             model=self.model,
@@ -268,6 +302,10 @@ class AgentLoop:
             error_message="Sorry, I encountered an error calling the AI model.",
             concurrent_tools=True,
         ))
+        finally:
+            self.provider.chat_with_retry = _orig_chat
+            self.provider.chat_stream_with_retry = _orig_stream
+
         self._last_usage = result.usage
         if result.stop_reason == "max_iterations":
             logger.warning("Max iterations ({}) reached", self.max_iterations)
@@ -405,7 +443,7 @@ class AgentLoop:
             key = f"{channel}:{chat_id}"
             session = self.sessions.get_or_create(key)
             await self.memory_consolidator.maybe_consolidate_by_tokens(session)
-            self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
+            self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"), session)
             history = session.get_history(max_messages=0)
             current_role = "assistant" if msg.sender_id == "subagent" else "user"
             messages = self.context.build_messages(
@@ -416,6 +454,7 @@ class AgentLoop:
             final_content, _, all_msgs = await self._run_agent_loop(
                 messages, channel=channel, chat_id=chat_id,
                 message_id=msg.metadata.get("message_id"),
+                session=session,
             )
             self._save_turn(session, all_msgs, 1 + len(history))
             self.sessions.save(session)
@@ -437,7 +476,7 @@ class AgentLoop:
 
         await self.memory_consolidator.maybe_consolidate_by_tokens(session)
 
-        self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
+        self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"), session)
         if message_tool := self.tools.get("message"):
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
@@ -465,6 +504,7 @@ class AgentLoop:
             on_stream_end=on_stream_end,
             channel=msg.channel, chat_id=msg.chat_id,
             message_id=msg.metadata.get("message_id"),
+            session=session,
         )
 
         if final_content is None:

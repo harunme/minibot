@@ -13,7 +13,8 @@ if TYPE_CHECKING:
     pass
 
 # MP3 文件存放目录（nanobot/skills/music-player/mp3/）
-SKILLS_MUSIC_PLAYER_DIR = Path(__file__).parent.parent.parent / "skills" / "music-player" / "mp3"
+SKILLS_MUSIC_PLAYER_DIR = Path(__file__).parent.parent / "skills" / "music-player" / "mp3"
+WORKSPACE_MUSIC_DIR = Path.home() / ".nanobot" / "workspace" / "mp3"
 
 
 class MusicPlayer:
@@ -63,31 +64,32 @@ class MusicPlayer:
 
 
 async def search_songs(query: str) -> list[tuple[Path, float]]:
-    """搜索匹配的 MP3 文件，按相关度排序。
+    """搜索匹配的 MP3 文件，按相关度排序。搜索两个目录：skills 内置 + 用户 workspace。
 
     Returns:
         [(Path, score), ...] 按 score 降序
     """
     results: list[tuple[Path, float]] = []
-    if not SKILLS_MUSIC_PLAYER_DIR.exists():
-        return results
 
-    for mp3_path in list(SKILLS_MUSIC_PLAYER_DIR.glob("**/*.mp3")) + list(SKILLS_MUSIC_PLAYER_DIR.glob("**/*.MP3")):
-        name_lower = mp3_path.stem.lower()
-        query_lower = query.lower()
-        score = 0.0
-        if query_lower in name_lower:
-            score = 1.0
-            if name_lower == query_lower:
-                score = 2.0
-        elif any(query_lower in word for word in name_lower.split()):
-            score = 0.8
-        else:
-            common = set(query_lower) & set(name_lower)
-            score = len(common) / max(len(query_lower), len(name_lower)) * 0.5
+    for base_dir in (SKILLS_MUSIC_PLAYER_DIR, WORKSPACE_MUSIC_DIR):
+        if not base_dir.exists():
+            continue
+        for mp3_path in list(base_dir.glob("**/*.mp3")) + list(base_dir.glob("**/*.MP3")):
+            name_lower = mp3_path.stem.lower()
+            query_lower = query.lower()
+            score = 0.0
+            if query_lower in name_lower:
+                score = 1.0
+                if name_lower == query_lower:
+                    score = 2.0
+            elif any(query_lower in word for word in name_lower.split()):
+                score = 0.8
+            else:
+                common = set(query_lower) & set(name_lower)
+                score = len(common) / max(len(query_lower), len(name_lower)) * 0.5
 
-        if score > 0:
-            results.append((mp3_path, score))
+            if score > 0:
+                results.append((mp3_path, score))
 
     results.sort(key=lambda x: x[1], reverse=True)
     return results

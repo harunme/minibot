@@ -32,8 +32,8 @@ from websockets.protocol import State as WsState
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
-from nanobot.channels.music_player import MusicPlayer
 from nanobot.providers.vad import VADState
+from nanobot.utils.audio import MusicPlayer, search_songs
 
 
 class MessageType(str, Enum):
@@ -556,13 +556,7 @@ class ConnectionHandler:
 
         # 2. TTS 流式合成 + 音频下行
         tts_provider = self._channel._tts_provider
-        music_path = msg.metadata.get("music") if msg.metadata else None
-        music_stop = msg.metadata.get("music_stop") if msg.metadata else None
-
         if tts_provider and msg.content:
-            # music_stop: 通知客户端清除上一轮残留的 playQueue，再开始 TTS
-            if music_stop:
-                await self._send_json({"type": MessageType.MUSIC, "state": "stop"})
             # 通知客户端 TTS 开始，客户端进入说话中状态
             await self._send_json({"type": MessageType.TTS, "state": "start"})
             self._client_is_speaking = True
@@ -601,7 +595,6 @@ class ConnectionHandler:
 
                 logger.info("[{}] TTS 发送完成: 共 {} 帧, {} bytes", self.session_id, sent_chunks, sent_bytes)
                 t_tts_done = time.monotonic()
-                self._client_is_speaking = False
                 await self._send_json({"type": MessageType.TTS, "state": "end"})
 
                 if pipeline_t0:
@@ -611,27 +604,12 @@ class ConnectionHandler:
                         (t_tts_done - pipeline_t0) * 1000,
                         (t_tts_done - t_reply) * 1000,
                     )
+
+                # TTS 发送完成后，解析回复文本中的 <play>歌曲名</play> 并播放
+                await self._play_music_from_tag(msg.content)
+
             except Exception as e:
                 logger.exception("[{}] TTS 合成失败: {}", self.session_id, e)
-
-        # 3. 音乐播放：TTS 结束后直接拼接 music PCM（music start/end JSON 供客户端协调）
-        if music_path and self._ws.state == WsState.OPEN:
-            await self._send_json({"type": MessageType.MUSIC, "state": "start"})
-            self._client_is_speaking = True
-            tts_sample_rate = self._channel._cfg("tts_sample_rate", 24000)
-            player = MusicPlayer(sample_rate=tts_sample_rate)
-            sent_bytes = 0
-            chunk_count = 0
-            async for pcm_chunk in player.stream(music_path):
-                if self._ws.state != WsState.OPEN:
-                    break
-                await self._ws.send(pcm_chunk)
-                sent_bytes += len(pcm_chunk)
-                chunk_count += 1
-                await asyncio.sleep(0.005)
-            self._client_is_speaking = False
-            await self._send_json({"type": MessageType.MUSIC, "state": "end"})
-            logger.info("[{}] 音乐 PCM 发送完成: {} chunks, {} bytes", self.session_id, chunk_count, sent_bytes)
 
     async def _send_json(self, data: dict[str, Any]) -> None:
         """发送 JSON 消息"""
@@ -648,6 +626,42 @@ class ConnectionHandler:
             "code": code,
             "message": message,
         })
+
+    def _extract_play_tag(self, text: str | None) -> str | None:
+        """从文本中提取 <play>歌曲名</play> 并返回歌曲名（不含标签）。"""
+        import re
+        if not text:
+            return None
+        m = re.search(r"<play>(.*?)</play>", text, re.IGNORECASE)
+        if m:
+            return m.group(1)
+        return None
+
+    async def _play_music_from_tag(self, text: str | None) -> None:
+        """解析文本中的 <play>标签，搜索并播放对应 MP3 文件。"""
+        song_name = self._extract_play_tag(text)
+        if not song_name:
+            return
+        results = await search_songs(song_name)
+        if not results:
+            logger.warning("[{}] 未找到歌曲: {}", self.session_id, song_name)
+            return
+        best = results[0][0]
+        logger.info("[{}] 播放音乐: {}", self.session_id, best.stem)
+        if self._ws.state != WsState.OPEN:
+            return
+        tts_sample_rate = self._channel._cfg("tts_sample_rate", 24000)
+        player = MusicPlayer(sample_rate=tts_sample_rate)
+        music_bytes = 0
+        music_chunks = 0
+        async for pcm_chunk in player.stream(str(best)):
+            if self._ws.state != WsState.OPEN:
+                break
+            await self._ws.send(pcm_chunk)
+            music_bytes += len(pcm_chunk)
+            music_chunks += 1
+            await asyncio.sleep(0.005)
+        logger.info("[{}] 音乐 PCM 发送完成: {} chunks, {} bytes", self.session_id, music_chunks, music_bytes)
 
     async def _close(self) -> None:
         """关闭 WebSocket 连接"""
