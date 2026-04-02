@@ -1,4 +1,4 @@
-"""WebSocket 硬件语音通道单元测试
+"""WebSocket 语音通道单元测试
 
 覆盖场景：握手认证、消息路由、音频处理、超时断开、错误处理。
 """
@@ -11,10 +11,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nanobot.channels.websocket_hw import (
+from nanobot.channels.websocket_voice import (
     ConnectionHandler,
     MessageType,
-    WebSocketHardwareChannel,
+    WebSocketVoiceChannel,
 )
 
 
@@ -77,27 +77,27 @@ def restricted_config():
 @pytest.fixture
 def channel(channel_config, mock_bus):
     """创建 Channel 实例（Mock ASR/TTS）"""
-    with patch.object(WebSocketHardwareChannel, "_create_asr_provider", return_value=None), \
-         patch.object(WebSocketHardwareChannel, "_create_tts_provider", return_value=None):
-        ch = WebSocketHardwareChannel(channel_config, mock_bus)
+    with patch.object(WebSocketVoiceChannel, "_create_asr_provider", return_value=None), \
+         patch.object(WebSocketVoiceChannel, "_create_tts_provider", return_value=None):
+        ch = WebSocketVoiceChannel(channel_config, mock_bus)
     return ch
 
 
 @pytest.fixture
 def auth_channel(auth_config, mock_bus):
     """创建带认证的 Channel 实例"""
-    with patch.object(WebSocketHardwareChannel, "_create_asr_provider", return_value=None), \
-         patch.object(WebSocketHardwareChannel, "_create_tts_provider", return_value=None):
-        ch = WebSocketHardwareChannel(auth_config, mock_bus)
+    with patch.object(WebSocketVoiceChannel, "_create_asr_provider", return_value=None), \
+         patch.object(WebSocketVoiceChannel, "_create_tts_provider", return_value=None):
+        ch = WebSocketVoiceChannel(auth_config, mock_bus)
     return ch
 
 
 @pytest.fixture
 def restricted_channel(restricted_config, mock_bus):
     """创建带白名单限制的 Channel 实例"""
-    with patch.object(WebSocketHardwareChannel, "_create_asr_provider", return_value=None), \
-         patch.object(WebSocketHardwareChannel, "_create_tts_provider", return_value=None):
-        ch = WebSocketHardwareChannel(restricted_config, mock_bus)
+    with patch.object(WebSocketVoiceChannel, "_create_asr_provider", return_value=None), \
+         patch.object(WebSocketVoiceChannel, "_create_tts_provider", return_value=None):
+        ch = WebSocketVoiceChannel(restricted_config, mock_bus)
     return ch
 
 
@@ -124,17 +124,17 @@ def make_mock_ws(messages=None):
 # ==================== Channel 基础测试 ====================
 
 
-class TestWebSocketHardwareChannel:
+class TestWebSocketVoiceChannel:
     """Channel 基础功能测试"""
 
     def test_channel_name(self, channel):
         """验证 Channel 名称"""
-        assert channel.name == "websocket_hw"
+        assert channel.name == "websocket_voice"
         assert channel.display_name == "WebSocket Hardware"
 
     def test_default_config(self):
         """验证默认配置"""
-        config = WebSocketHardwareChannel.default_config()
+        config = WebSocketVoiceChannel.default_config()
         assert config["enabled"] is False
         assert config["port"] == 9000
         assert config["allowFrom"] == ["*"]

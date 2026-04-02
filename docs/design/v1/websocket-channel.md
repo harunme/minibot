@@ -1,7 +1,7 @@
 # V1 §3b WebSocket 语音通道
 
 > 参考 xiaozhi-esp32-server 架构，通过 WebSocket 直连客户端。
-> 实现 `nanobot/channels/websocket_hw.py` 时参考。
+> 实现 `nanobot/channels/websocket_voice.py` 时参考。
 
 ## 1. 概述
 
@@ -121,7 +121,7 @@ if not is_allowed(device_id):
 ```json
 {
   "channels": {
-    "websocket_hw": {
+    "websocket_voice": {
       "enabled": true,
       "host": "0.0.0.0",
       "port": 9000,

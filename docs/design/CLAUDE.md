@@ -29,7 +29,7 @@ design/
 | 实现模块 | 读取文件 | 对应代码 |
 |----------|---------|---------|
 | 概述与架构 | `v1/overview-and-architecture.md` | 整体理解用 |
-| WebSocket 语音通道 | `v1/websocket-channel.md` | `channels/websocket_hw.py` |
+| WebSocket 语音通道 | `v1/websocket-channel.md` | `channels/websocket_voice.py` |
 | ASR/TTS Provider | `v1/asr-tts.md` | `providers/asr.py`, `providers/tts.py` |
 | 配置扩展 | `v1/config.md` | `config/schema.py` |
 

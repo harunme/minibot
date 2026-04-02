@@ -66,6 +66,6 @@
 
 | 扩展点 | 方式 | 说明 |
 |--------|------|------|
-| WebSocket Channel | `BaseChannel` 子类 | `channels/websocket_hw.py`，内嵌 WebSocket 服务器 |
+| WebSocket Channel | `BaseChannel` 子类 | `channels/websocket_voice.py`，内嵌 WebSocket 服务器 |
 | ASR WebSocket | `websockets` 客户端 | Channel 内部实现，流式调用火山引擎 ASR |
 | TTS | 独立 Provider 模块 + WebSocket | `providers/tts.py`，内部通过 WebSocket 调用火山引擎 TTS |

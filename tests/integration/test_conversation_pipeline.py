@@ -24,10 +24,10 @@ import pytest
 
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.channels.websocket_hw import (
+from nanobot.channels.websocket_voice import (
     ConnectionHandler,
     MessageType,
-    WebSocketHardwareChannel,
+    WebSocketVoiceChannel,
 )
 
 
@@ -232,10 +232,10 @@ def mock_tts():
 def channel_with_providers(ws_config, mock_asr, mock_tts):
     """创建带 Mock ASR/TTS/VAD 的 WebSocket Channel"""
     bus = MessageBus()
-    with patch.object(WebSocketHardwareChannel, "_create_asr_provider", return_value=mock_asr), \
-         patch.object(WebSocketHardwareChannel, "_create_tts_provider", return_value=mock_tts), \
-         patch.object(WebSocketHardwareChannel, "_create_vad_provider", return_value=MockVADProvider()):
-        ch = WebSocketHardwareChannel(ws_config, bus)
+    with patch.object(WebSocketVoiceChannel, "_create_asr_provider", return_value=mock_asr), \
+         patch.object(WebSocketVoiceChannel, "_create_tts_provider", return_value=mock_tts), \
+         patch.object(WebSocketVoiceChannel, "_create_vad_provider", return_value=MockVADProvider()):
+        ch = WebSocketVoiceChannel(ws_config, bus)
     return ch, bus
 
 
@@ -301,7 +301,7 @@ class TestPipelineStage1_ASR:
         # 验证 MessageBus 中有 InboundMessage
         msg = await asyncio.wait_for(bus.consume_inbound(), timeout=2.0)
         assert isinstance(msg, InboundMessage)
-        assert msg.channel == "websocket_hw"
+        assert msg.channel == "websocket_voice"
         assert msg.chat_id == "dev001"
         assert msg.content == "你好世界"
         assert "_pipeline_t0" in msg.metadata
@@ -321,7 +321,7 @@ class TestPipelineStage2_BusRouting:
 
         # 模拟 Agent 回复
         outbound = OutboundMessage(
-            channel="websocket_hw",
+            channel="websocket_voice",
             chat_id="dev001",
             content="你好！我是小助手。",
             metadata={"_pipeline_t0": time.monotonic() - 0.5},
@@ -346,7 +346,7 @@ class TestPipelineStage2_BusRouting:
         """向未连接设备发送不报错"""
         channel, bus = channel_with_providers
         outbound = OutboundMessage(
-            channel="websocket_hw",
+            channel="websocket_voice",
             chat_id="dev_unknown",
             content="no one listening",
         )
@@ -393,12 +393,12 @@ class TestPipelineStage3_FullPipeline:
         # ---- Step 5: 验证 ASR 结果到 bus ----
         inbound = await asyncio.wait_for(bus.consume_inbound(), timeout=2.0)
         assert inbound.content == "你好世界"
-        assert inbound.channel == "websocket_hw"
+        assert inbound.channel == "websocket_voice"
         assert inbound.chat_id == "dev_test"
 
         # ---- Step 6: 模拟 Agent 回复 ----
         outbound = OutboundMessage(
-            channel="websocket_hw",
+            channel="websocket_voice",
             chat_id="dev_test",
             content="你好！有什么可以帮你的吗？",
             metadata={"_pipeline_t0": inbound.metadata.get("_pipeline_t0")},
@@ -443,7 +443,7 @@ class TestPipelineStage3_FullPipeline:
 
         # 模拟 Agent 传递 metadata
         outbound = OutboundMessage(
-            channel="websocket_hw",
+            channel="websocket_voice",
             chat_id="dev_lat",
             content="回复",
             metadata=dict(inbound.metadata),
@@ -458,9 +458,9 @@ class TestPipelineStage4_ASRUnavailable:
     async def test_no_asr_sends_error(self, ws_config):
         """ASR Provider 为 None 时发送错误消息"""
         bus = MessageBus()
-        with patch.object(WebSocketHardwareChannel, "_create_asr_provider", return_value=None), \
-             patch.object(WebSocketHardwareChannel, "_create_tts_provider", return_value=None):
-            channel = WebSocketHardwareChannel(ws_config, bus)
+        with patch.object(WebSocketVoiceChannel, "_create_asr_provider", return_value=None), \
+             patch.object(WebSocketVoiceChannel, "_create_tts_provider", return_value=None):
+            channel = WebSocketVoiceChannel(ws_config, bus)
 
         ws = MockWebSocket()
         handler = ConnectionHandler(ws, channel)
@@ -479,9 +479,9 @@ class TestPipelineStage4_ASRUnavailable:
     async def test_no_tts_still_sends_text(self, ws_config):
         """TTS Provider 为 None 时仍然发送文本回复"""
         bus = MessageBus()
-        with patch.object(WebSocketHardwareChannel, "_create_asr_provider", return_value=None), \
-             patch.object(WebSocketHardwareChannel, "_create_tts_provider", return_value=None):
-            channel = WebSocketHardwareChannel(ws_config, bus)
+        with patch.object(WebSocketVoiceChannel, "_create_asr_provider", return_value=None), \
+             patch.object(WebSocketVoiceChannel, "_create_tts_provider", return_value=None):
+            channel = WebSocketVoiceChannel(ws_config, bus)
 
         ws = MockWebSocket()
         handler = ConnectionHandler(ws, channel)
@@ -490,7 +490,7 @@ class TestPipelineStage4_ASRUnavailable:
         channel._register_connection("dev001", handler)
 
         outbound = OutboundMessage(
-            channel="websocket_hw",
+            channel="websocket_voice",
             chat_id="dev001",
             content="文本回复，无音频",
         )
@@ -530,7 +530,7 @@ class TestPipelineStage5_TTS_Abort:
         channel._register_connection("dev001", handler)
 
         outbound = OutboundMessage(
-            channel="websocket_hw",
+            channel="websocket_voice",
             chat_id="dev001",
             content="这是一段较长的回复",
         )
@@ -565,11 +565,11 @@ class TestPipelineStage6_MultipleConnections:
 
         # 向 dev_A 发消息
         await channel.send(OutboundMessage(
-            channel="websocket_hw", chat_id="dev_A", content="Hello A",
+            channel="websocket_voice", chat_id="dev_A", content="Hello A",
         ))
         # 向 dev_B 发消息
         await channel.send(OutboundMessage(
-            channel="websocket_hw", chat_id="dev_B", content="Hello B",
+            channel="websocket_voice", chat_id="dev_B", content="Hello B",
         ))
 
         # 各自收到自己的消息
@@ -630,7 +630,7 @@ class TestPipelineStage8_ContinuousDialogue:
 
         # 模拟 Agent 回复
         await channel.send(OutboundMessage(
-            channel="websocket_hw",
+            channel="websocket_voice",
             chat_id="cont_dev",
             content="第一轮回复",
         ))
@@ -665,7 +665,7 @@ class TestPipelineStage8_ContinuousDialogue:
 
         # 7. 模拟 Agent 回复
         reply = OutboundMessage(
-            channel="websocket_hw",
+            channel="websocket_voice",
             chat_id="round_trip_dev",
             content="我收到了你说的：" + inbound.content,
             metadata=dict(inbound.metadata),

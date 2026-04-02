@@ -1,4 +1,4 @@
-"""WebSocket 硬件语音通道 — 客户端接入方案
+"""WebSocket 语音通道 — 客户端直连接入
 
 参考 xiaozhi-esp32-server 架构，通过 WebSocket 直连客户端（Tauri/Web）。
 文本消息（JSON）走控制流，二进制消息走音频流。
@@ -62,7 +62,7 @@ class ConnectionHandler:
     def __init__(
         self,
         websocket: websockets.WebSocketServerProtocol,
-        channel: WebSocketHardwareChannel,
+        channel: WebSocketVoiceChannel,
     ):
         self._ws = websocket
         self._channel = channel
@@ -728,15 +728,15 @@ class ConnectionHandler:
         logger.info("[{}] 连接清理完成", self.session_id)
 
 
-class WebSocketHardwareChannel(BaseChannel):
+class WebSocketVoiceChannel(BaseChannel):
     """WebSocket 硬件语音通道 — 继承 nanobot BaseChannel
 
     通过 WebSocket 直连客户端，实现语音双向通信。
     参考 xiaozhi-esp32-server 架构，WebSocket 直连无需中间件。
     """
 
-    name = "websocket_hw"
-    display_name = "WebSocket Hardware"
+    name = "websocket_voice"
+    display_name = "WebSocket Voice"
 
     def __init__(self, config: Any, bus: MessageBus):
         """初始化 WebSocket Channel
@@ -748,7 +748,7 @@ class WebSocketHardwareChannel(BaseChannel):
         # 修复：初始化_running属性，防止AttributeError
         self._running = False
 
-        logger.info("WebSocketHardwareChannel.__init__ 开始，创建 ASR/TTS/VAD Provider...")
+        logger.info("WebSocketVoiceChannel.__init__ 开始，创建 ASR/TTS/VAD Provider...")
 
         # ASR/TTS/VAD Provider（Channel 内部自建）
         self._asr_provider = self._create_asr_provider()

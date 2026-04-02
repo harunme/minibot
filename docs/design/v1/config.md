@@ -10,7 +10,7 @@
   // ... 现有 nanobot 配置 ...
   
   "channels": {
-    "websocket_hw": {
+    "websocket_voice": {
       "enabled": true,
       "host": "0.0.0.0",
       "port": 9000,

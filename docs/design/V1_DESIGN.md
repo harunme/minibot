@@ -144,7 +144,7 @@
 
 | 扩展点 | 方式 | 说明 |
 |--------|------|------|
-| WebSocket Channel | `BaseChannel` 子类 | `channels/websocket_hw.py`，内嵌 WebSocket 服务器 |
+| WebSocket Channel | `BaseChannel` 子类 | `channels/websocket_voice.py`，内嵌 WebSocket 服务器 |
 | ASR Provider | `websockets` 客户端 | Channel 内部创建，流式调用火山引擎 ASR |
 | TTS Provider | 独立 Provider 模块 + WebSocket | `providers/tts.py`，内部通过 WebSocket 调用火山引擎 TTS |
 | 消息总线 | `MessageBus` 双队列 | `bus/queue.py`，解耦 Channel 与 AgentLoop |
@@ -156,7 +156,7 @@
 
 ### 3.1 概述
 
-WebSocket 语音通道面向 Tauri 桌面客户端和 Web 浏览器，客户端通过 WebSocket 直连服务端，无需中间件（Broker）。文件位置 `nanobot/channels/websocket_hw.py`，继承 `BaseChannel`。内部集成 ASR/TTS Provider 负责语音识别和合成。
+WebSocket 语音通道面向 Tauri 桌面客户端和 Web 浏览器，客户端通过 WebSocket 直连服务端，无需中间件（Broker）。文件位置 `nanobot/channels/websocket_voice.py`，继承 `BaseChannel`。内部集成 ASR/TTS Provider 负责语音识别和合成。
 
 > 详细协议规范：`docs/design/v1/websocket-channel.md`
 
@@ -234,11 +234,11 @@ ConnectionHandler.send_reply():
 ### 3.6 核心实现
 
 ```python
-# nanobot/channels/websocket_hw.py（简化伪代码）
+# nanobot/channels/websocket_voice.py（简化伪代码）
 
-class WebSocketHardwareChannel(BaseChannel):
-    name = "websocket_hw"
-    display_name = "WebSocket Hardware"
+class WebSocketVoiceChannel(BaseChannel):
+    name = "websocket_voice"
+    display_name = "WebSocket Voice"
 
     def __init__(self, config: dict, bus: MessageBus):
         super().__init__(config, bus)
@@ -584,7 +584,7 @@ class VolcengineTTSProvider(TTSProvider):
   
   "channels": {
     // ... 现有渠道 ...
-    "websocket_hw": {
+    "websocket_voice": {
       "enabled": true,
       "host": "0.0.0.0",                // WebSocket 监听地址
       "port": 9000,                      // WebSocket 监听端口
@@ -664,7 +664,7 @@ project-root/
 │   │   ├── base.py                # BaseChannel 抽象基类
 │   │   ├── manager.py             # ChannelManager（路由 + 分发）
 │   │   ├── registry.py            # 通道自动发现
-│   │   ├── websocket_hw.py        # WebSocket 语音通道（V1 核心）
+│   │   ├── websocket_voice.py        # WebSocket 语音通道（V1 核心）
 │   │   └── ... (其他渠道)
 │   ├── providers/
 │   │   ├── asr.py                 # ASR Provider（火山引擎 WebSocket）
@@ -686,7 +686,7 @@ project-root/
 ├── tests/                          # 测试
 │   ├── conftest.py                # 全局 fixtures（MessageBus 等）
 │   ├── channels/
-│   │   └── test_websocket_hw_channel.py  # WebSocket 通道单元测试（27个）
+│   │   └── test_websocket_voice_channel.py  # WebSocket 通道单元测试（27个）
 │   ├── integration/
 │   │   └── test_conversation_pipeline.py # M4 全链路集成测试（11个）
 │   └── providers/
@@ -712,7 +712,7 @@ uv sync            # 使用 uv 管理依赖
 # 2. 配置
 cp config.example.json ~/.minibot/config.json
 # 编辑配置：填入 LLM API Key、火山引擎 ASR/TTS AppId/Token
-# 启用 WebSocket 通道：channels.websocket_hw.enabled = true
+# 启用 WebSocket 通道：channels.websocket_voice.enabled = true
 
 # 3. 启动网关（WebSocket Channel + AgentLoop）
 nanobot gateway
@@ -776,7 +776,7 @@ location /ws {
 
 | 模块 | 测试文件 | 覆盖内容 | 数量 |
 |------|----------|----------|------|
-| WebSocket Channel | `test_websocket_hw_channel.py` | 连接握手、设备认证/白名单、消息路由、listen 控制、abort、send reply | 27 |
+| WebSocket Channel | `test_websocket_voice_channel.py` | 连接握手、设备认证/白名单、消息路由、listen 控制、abort、send reply | 27 |
 | ASR Provider | `test_asr_provider.py` | 火山引擎 WebSocket 连接、流式识别、错误处理 | — |
 | TTS Provider | `test_tts_provider.py` | 火山引擎 WebSocket 合成、流式输出、错误处理 | — |
 
