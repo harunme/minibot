@@ -11,7 +11,9 @@
       "Bash(pytest tests/ -x -q)",
       "Bash(pytest tests/ -x -q --ignore=tests/channels/test_websocket_voice_channel.py)",
       "Bash(git stash:*)",
-      "Bash(pytest tests/config/test_v1_config.py::TestWebSocketChannelConfig::test_default_values -x -q)"
+      "Bash(pytest tests/config/test_v1_config.py::TestWebSocketChannelConfig::test_default_values -x -q)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ]
   }
 }
