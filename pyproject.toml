@@ -105,6 +105,8 @@ include = [
     "nanobot/skills/**/*.md",
     "nanobot/skills/**/*.sh",
 ]
+# Admin frontend build output (nanobot/admin/static/)
+
 
 [tool.hatch.build.targets.wheel]
 packages = ["nanobot"]

@@ -282,6 +282,12 @@ class VectorStoreConfig(Base):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
 
 
+class AdminConfig(Base):
+    """知识库管理后台配置"""
+
+    password: str = ""  # Bearer token for /api/admin/* endpoints
+
+
 class Config(BaseSettings):
     """Root configuration for nanobot."""
 
@@ -295,6 +301,7 @@ class Config(BaseSettings):
     tts: TTSConfig = Field(default_factory=TTSConfig)
     vad: VADConfig = Field(default_factory=VADConfig)
     vectorstore: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
+    admin: AdminConfig = Field(default_factory=AdminConfig)
 
     @property
     def workspace_path(self) -> Path:

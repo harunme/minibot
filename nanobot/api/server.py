@@ -173,19 +173,76 @@ async def handle_health(request: web.Request) -> web.Response:
 # App factory
 # ---------------------------------------------------------------------------
 
-def create_app(agent_loop, model_name: str = "nanobot", request_timeout: float = 120.0) -> web.Application:
+def create_app(
+    agent_loop,
+    model_name: str = "nanobot",
+    request_timeout: float = 120.0,
+    admin_password: str = "",
+    vectorstore_config=None,
+    admin_tenant_id: str = "default",
+) -> web.Application:
     """Create the aiohttp application.
 
     Args:
         agent_loop: An initialized AgentLoop instance.
         model_name: Model name reported in responses.
         request_timeout: Per-request timeout in seconds.
+        admin_password: Bearer token for /api/admin/* endpoints. Empty = admin disabled.
+        vectorstore_config: VectorStoreConfig for admin knowledge base management.
+        admin_tenant_id: Tenant ID for admin knowledge base operations.
     """
+    import os
+
+    from nanobot.admin import handlers as admin_handlers
+    from nanobot.admin.auth import admin_auth_middleware
+
     app = web.Application()
     app["agent_loop"] = agent_loop
     app["model_name"] = model_name
     app["request_timeout"] = request_timeout
     app["session_locks"] = {}  # per-user locks, keyed by session_key
+
+    # Admin backend (知识库管理)
+    if admin_password:
+        from nanobot.admin import auth as admin_auth
+
+        admin_auth.ADMIN_PASSWORD = admin_password
+        app.middlewares.append(admin_auth_middleware)
+
+        app["vectorstore_config"] = vectorstore_config
+        app["admin_tenant_id"] = admin_tenant_id
+
+        if vectorstore_config and vectorstore_config.provider != "none":
+            from nanobot.providers.vectorstore import create_vectorstore_provider
+
+            app["vectorstore_provider"] = create_vectorstore_provider(
+                vectorstore_config,
+                tenant_id=admin_tenant_id,
+            )
+
+        # Register admin routes
+        app.router.add_get("/api/admin/documents", admin_handlers.handle_admin_documents_list)
+        app.router.add_get("/api/admin/documents/{id}", admin_handlers.handle_admin_document_get)
+        app.router.add_delete("/api/admin/documents/{id}", admin_handlers.handle_admin_document_delete)
+        app.router.add_delete("/api/admin/documents", admin_handlers.handle_admin_documents_batch_delete)
+        app.router.add_post("/api/admin/documents/upload", admin_handlers.handle_admin_documents_upload)
+        app.router.add_get("/api/admin/documents/stats", admin_handlers.handle_admin_documents_stats)
+        app.router.add_get("/api/admin/search", admin_handlers.handle_admin_search)
+
+        # Serve built frontend at /admin/*
+        static_dir = os.path.join(os.path.dirname(__file__), "admin", "static")
+        if os.path.isdir(static_dir):
+            app.router.add_static("/admin", static_dir)
+
+            async def serve_spa(request: web.Request) -> web.Response:
+                """SPA fallback: serve index.html for non-file paths under /admin/*"""
+                path = request.match_info["path"]
+                file_path = os.path.join(static_dir, path)
+                if os.path.isfile(file_path):
+                    return web.FileResponse(file_path)
+                return web.FileResponse(os.path.join(static_dir, "index.html"))
+
+            app.router.add_get("/admin/{path:.*}", serve_spa)
 
     app.router.add_post("/v1/chat/completions", handle_chat_completions)
     app.router.add_get("/v1/models", handle_models)

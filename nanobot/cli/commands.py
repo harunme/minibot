@@ -555,11 +555,14 @@ def serve(
     )
 
     model_name = runtime_config.agents.defaults.model
+    admin_password = runtime_config.admin.password
     console.print(f"{__logo__} Starting OpenAI-compatible API server")
     console.print(f"  [cyan]Endpoint[/cyan] : http://{host}:{port}/v1/chat/completions")
     console.print(f"  [cyan]Model[/cyan]    : {model_name}")
     console.print("  [cyan]Session[/cyan]  : api:default")
     console.print(f"  [cyan]Timeout[/cyan]  : {timeout}s")
+    if admin_password:
+        console.print(f"  [cyan]Admin[/cyan]    : http://{host}:{port}/admin/ (Bearer token set)")
     if host in {"0.0.0.0", "::"}:
         console.print(
             "[yellow]Warning:[/yellow] API is bound to all interfaces. "
@@ -567,7 +570,14 @@ def serve(
         )
     console.print()
 
-    api_app = create_app(agent_loop, model_name=model_name, request_timeout=timeout)
+    api_app = create_app(
+        agent_loop,
+        model_name=model_name,
+        request_timeout=timeout,
+        admin_password=admin_password,
+        vectorstore_config=runtime_config.vectorstore,
+        admin_tenant_id="default",
+    )
 
     async def on_startup(_app):
         await agent_loop._connect_mcp()

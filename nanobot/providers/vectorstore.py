@@ -34,6 +34,15 @@ class SearchResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class CollectionStats:
+    """向量数据库 collection 统计信息"""
+
+    count: int
+    categories: dict[str, int]  # category → doc count（按文件去重）
+    storage_bytes: int | None  # SQLite 文件大小估算
+
+
 class EmbeddingProvider(ABC):
     """Embedding 生成器抽象基类"""
 
@@ -123,6 +132,31 @@ class VectorStoreProvider(ABC):
     @abstractmethod
     async def is_available(self) -> bool:
         """检查服务可用性"""
+        ...
+
+    @abstractmethod
+    async def list_documents(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        category: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """列出文档（支持分类过滤和分页）
+
+        Args:
+            limit: 最大返回数量
+            offset: 跳过数量（分页偏移）
+            category: 可选，按文档分类过滤
+
+        Returns:
+            (文档列表, 总数) — 文档格式: {id, content_preview, metadata}
+        """
+        ...
+
+    @abstractmethod
+    async def get_stats(self) -> CollectionStats:
+        """返回 collection 统计信息"""
         ...
 
     @abstractmethod
@@ -335,6 +369,87 @@ class ChromaDBVectorStoreProvider(VectorStoreProvider):
         logger.info("[VectorStore] 从 collection '{}' 删除 {} 篇文档", self._qualified_collection_name, len(ids))
         return True
 
+    async def list_documents(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        category: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """列出文档（支持分类过滤和分页）"""
+        await self._ensure_initialized()
+        collection = self._collection
+
+        # ChromaDB 的 where 过滤是 AND 语义，category 精确匹配
+        where_filter: dict[str, Any] | None = {"category": category} if category else None
+
+        # 获取过滤后的所有文档（ChromaDB 不支持 offset，需手动切片）
+        all_results = collection.get(where=where_filter, include=["documents", "metadatas"])
+        all_ids = all_results.get("ids", [])
+        all_docs = all_results.get("documents", [])
+        all_metas = all_results.get("metadatas", [None] * len(all_ids))
+
+        total = len(all_ids)
+        page_ids = all_ids[offset:offset + limit]
+        page_docs = all_docs[offset:offset + limit]
+        page_metas = all_metas[offset:offset + limit]
+
+        documents: list[dict[str, Any]] = []
+        for i, doc_id in enumerate(page_ids):
+            content = page_docs[i] if i < len(page_docs) else ""
+            meta = page_metas[i] if i < len(page_metas) and page_metas[i] else {}
+            # content_preview 截取前 200 字符，避免列表返回过长
+            preview = content[:200] + ("..." if len(content) > 200 else "")
+            documents.append({
+                "id": doc_id,
+                "content_preview": preview,
+                "metadata": meta,
+            })
+        return documents, total
+
+    async def get_stats(self) -> CollectionStats:
+        """返回 collection 统计信息"""
+        await self._ensure_initialized()
+        collection = self._collection
+
+        total_count = collection.count()
+
+        # 遍历 metadata 统计分类（按 source 文件去重计数）
+        categories: dict[str, int] = {}
+        seen_files: set[str] = set()
+
+        try:
+            # peek 返回所有文档（受 ChromaDB 内部限制，limit 默认 1000）
+            all_results = collection.peek(limit=10000, include=["metadatas"])
+            metadatas = all_results.get("metadatas", [])
+            for meta in metadatas:
+                if not meta:
+                    continue
+                source = meta.get("source", "unknown")
+                category = meta.get("category", "general")
+                # 按 (source, category) 唯一键去重
+                key = f"{source}::{category}"
+                if key not in seen_files:
+                    seen_files.add(key)
+                    categories[category] = categories.get(category, 0) + 1
+        except Exception as e:
+            logger.warning("[VectorStore] 统计分类时出错: {}", e)
+
+        # 估算存储大小：ChromaDB SQLite 文件
+        storage_bytes: int | None = None
+        try:
+            chroma_sqlite = self._data_dir / "chroma.sqlite"
+            if chroma_sqlite.exists():
+                storage_bytes = chroma_sqlite.stat().st_size
+        except Exception:
+            pass
+
+        return CollectionStats(
+            count=total_count,
+            categories=categories,
+            storage_bytes=storage_bytes,
+        )
+
     async def is_available(self) -> bool:
         try:
             await self._ensure_initialized()
@@ -440,6 +555,18 @@ class _NoOpVectorStoreProvider(VectorStoreProvider):
 
     async def is_available(self) -> bool:
         return False
+
+    async def list_documents(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        category: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        return [], 0
+
+    async def get_stats(self) -> CollectionStats:
+        return CollectionStats(count=0, categories={}, storage_bytes=None)
 
     async def close(self) -> None:
         pass
