@@ -21,6 +21,8 @@ class MessageTool(Tool):
         self._default_chat_id = default_chat_id
         self._default_message_id = default_message_id
         self._sent_in_turn: bool = False
+        # 待播歌曲（由 PlayMusicTool 写入，由 MessageTool 在 metadata 中携带）
+        self._pending_music: tuple[str, str] | None = None  # (song_name, display_name)
 
     def set_context(
         self, channel: str, chat_id: str, session: Any = None, message_id: str | None = None
@@ -42,8 +44,13 @@ class MessageTool(Tool):
         self._send_callback = callback
 
     def start_turn(self) -> None:
-        """Reset per-turn send tracking."""
+        """Reset per-turn send tracking and pending music."""
         self._sent_in_turn = False
+        self._pending_music = None
+
+    def set_pending_music(self, song_name: str, display_name: str) -> None:
+        """设置待播歌曲，由 PlayMusicTool 调用."""
+        self._pending_music = (song_name, display_name)
 
     @property
     def name(self) -> str:
@@ -110,6 +117,7 @@ class MessageTool(Tool):
             media=media or [],
             metadata={
                 "message_id": message_id,
+                "_music": self._pending_music[0] if self._pending_music else None,
             },
         )
 

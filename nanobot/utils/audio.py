@@ -12,8 +12,6 @@ from loguru import logger
 if TYPE_CHECKING:
     pass
 
-# MP3 文件存放目录（nanobot/skills/music-player/mp3/）
-SKILLS_MUSIC_PLAYER_DIR = Path(__file__).parent.parent / "skills" / "music-player" / "mp3"
 WORKSPACE_MUSIC_DIR = Path.home() / ".nanobot" / "workspace" / "mp3"
 
 
@@ -64,14 +62,14 @@ class MusicPlayer:
 
 
 async def search_songs(query: str) -> list[tuple[Path, float]]:
-    """搜索匹配的 MP3 文件，按相关度排序。搜索两个目录：skills 内置 + 用户 workspace。
+    """搜索匹配的 MP3 文件，按相关度排序。搜索 ~/.nanobot/workspace/mp3/ 目录。
 
     Returns:
         [(Path, score), ...] 按 score 降序
     """
     results: list[tuple[Path, float]] = []
 
-    for base_dir in (SKILLS_MUSIC_PLAYER_DIR, WORKSPACE_MUSIC_DIR):
+    for base_dir in (WORKSPACE_MUSIC_DIR,):
         if not base_dir.exists():
             continue
         for mp3_path in list(base_dir.glob("**/*.mp3")) + list(base_dir.glob("**/*.MP3")):

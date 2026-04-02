@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from enum import Enum
@@ -605,8 +606,8 @@ class ConnectionHandler:
                         (t_tts_done - t_reply) * 1000,
                     )
 
-                # TTS 发送完成后，解析回复文本中的 <play>歌曲名</play> 并播放
-                await self._play_music_from_tag(msg.content)
+                # TTS 发送完成后，播放 metadata 中的待播歌曲
+                await self._play_pending_music(msg.metadata.get("_music") if msg.metadata else None)
 
             except Exception as e:
                 logger.exception("[{}] TTS 合成失败: {}", self.session_id, e)
@@ -629,7 +630,6 @@ class ConnectionHandler:
 
     def _extract_play_tag(self, text: str | None) -> str | None:
         """从文本中提取 <play>歌曲名</play> 并返回歌曲名（不含标签）。"""
-        import re
         if not text:
             return None
         m = re.search(r"<play>(.*?)</play>", text, re.IGNORECASE)
@@ -637,9 +637,8 @@ class ConnectionHandler:
             return m.group(1)
         return None
 
-    async def _play_music_from_tag(self, text: str | None) -> None:
-        """解析文本中的 <play>标签，搜索并播放对应 MP3 文件。"""
-        song_name = self._extract_play_tag(text)
+    async def _play_music_by_name(self, song_name: str | None) -> None:
+        """根据歌曲名搜索 MP3 文件并推流 PCM 到客户端."""
         if not song_name:
             return
         results = await search_songs(song_name)
@@ -662,6 +661,10 @@ class ConnectionHandler:
             music_chunks += 1
             await asyncio.sleep(0.005)
         logger.info("[{}] 音乐 PCM 发送完成: {} chunks, {} bytes", self.session_id, music_chunks, music_bytes)
+
+    async def _play_pending_music(self, song_name: str | None) -> None:
+        """播放待播歌曲（由 MessageTool 通过 metadata["_music"] 触发）。"""
+        await self._play_music_by_name(song_name)
 
     async def _close(self) -> None:
         """关闭 WebSocket 连接"""
