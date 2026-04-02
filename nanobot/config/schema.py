@@ -184,6 +184,12 @@ class WebSocketChannelConfig(Base):
     audio_format: str = "pcm"
     tts_sample_rate: int = 24000  # TTS 输出采样率（与客户端 AudioContext 匹配）
     allow_from: list[str] = ["*"]
+class ApiConfig(Base):
+    """OpenAI-compatible API server configuration."""
+
+    host: str = "127.0.0.1"  # Safer default: local-only bind.
+    port: int = 8900
+    timeout: float = 120.0  # Per-request timeout in seconds.
 
 
 class GatewayConfig(Base):
@@ -246,6 +252,7 @@ class Config(BaseSettings):
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
+    api: ApiConfig = Field(default_factory=ApiConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     asr: ASRConfig = Field(default_factory=ASRConfig)
