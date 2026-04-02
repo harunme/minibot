@@ -230,19 +230,20 @@ def create_app(
         app.router.add_get("/api/admin/search", admin_handlers.handle_admin_search)
 
         # Serve built frontend at /admin/*
-        static_dir = os.path.join(os.path.dirname(__file__), "admin", "static")
+        # static_dir: nanobot/admin/static/  (up one level from nanobot/api/)
+        static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "admin", "static")
         if os.path.isdir(static_dir):
-            app.router.add_static("/admin", static_dir)
 
-            async def serve_spa(request: web.Request) -> web.Response:
-                """SPA fallback: serve index.html for non-file paths under /admin/*"""
-                path = request.match_info["path"]
-                file_path = os.path.join(static_dir, path)
-                if os.path.isfile(file_path):
+            async def serve_admin(request: web.Request) -> web.Response:
+                """Serve SPA: index.html for /admin/* (no-file paths), exact file for assets."""
+                path = request.match_info.get("path", "")
+                file_path = os.path.join(static_dir, path) if path else static_dir
+                if path and os.path.isfile(file_path):
                     return web.FileResponse(file_path)
                 return web.FileResponse(os.path.join(static_dir, "index.html"))
 
-            app.router.add_get("/admin/{path:.*}", serve_spa)
+            app.router.add_get("/admin/{path:.*}", serve_admin)
+            app.router.add_get("/admin", serve_admin)
 
     app.router.add_post("/v1/chat/completions", handle_chat_completions)
     app.router.add_get("/v1/models", handle_models)
