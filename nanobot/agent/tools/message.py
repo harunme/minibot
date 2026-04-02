@@ -98,6 +98,7 @@ class MessageTool(Tool):
         chat_id: str | None = None,
         message_id: str | None = None,
         media: list[str] | None = None,
+        _music: str | None = None,
         **kwargs: Any
     ) -> str:
         channel = channel or self._default_channel
@@ -110,6 +111,8 @@ class MessageTool(Tool):
         if not self._send_callback:
             return "Error: Message sending not configured"
 
+        # _music 可由调用方直接传入（PlayMusicTool），也可来自 _pending_music（兼容旧逻辑）
+        music_value = _music or (self._pending_music[0] if self._pending_music else None)
         msg = OutboundMessage(
             channel=channel,
             chat_id=chat_id,
@@ -117,7 +120,7 @@ class MessageTool(Tool):
             media=media or [],
             metadata={
                 "message_id": message_id,
-                "_music": self._pending_music[0] if self._pending_music else None,
+                "_music": music_value,
             },
         )
 

@@ -15,17 +15,17 @@ class PlayMusicTool(Tool):
     """
     搜索并播放本地 MP3 歌曲。
 
-    在同一次对话回合中，如果 MessageTool 会发送文本回复，
-    则 PlayMusicTool 将歌曲名写入 MessageTool._pending_music，
-    由 MessageTool 在发送的 OutboundMessage.metadata["_music"] 中带上。
-    Channel 在 TTS 播放完毕后读取 metadata 播放对应 MP3。
+    歌曲存放目录：~/.nanobot/workspace/mp3/。
+    找不到歌曲时返回提示信息（不发消息）。
+    找到歌曲时直接调用 MessageTool.execute() 发送带 _music metadata 的消息，
+    由 Channel 在 TTS 播放完毕后读取 metadata["_music"] 播放对应 MP3。
     """
 
     def __init__(self, message_tool: "MessageTool | None" = None):
         self._message_tool = message_tool
 
     def bind_message_tool(self, message_tool: "MessageTool") -> None:
-        """绑定 MessageTool，用于将歌曲信息写入 metadata."""
+        """绑定 MessageTool，用于发送消息."""
         self._message_tool = message_tool
 
     @property
@@ -60,9 +60,13 @@ class PlayMusicTool(Tool):
 
         best_path = results[0][0]
         song_display = best_path.stem
+        content = f"好的，正在为你播放「{song_display}」！🎵"
 
-        # 将待播歌曲写入 MessageTool，MessageTool 会将其放入 metadata["_music"]
+        # 直接调用 MessageTool.execute() 发送消息（带 _music metadata），
+        # 避免依赖 LLM 主动调用 MessageTool 导致消息丢失。
+        # MessageTool._sent_in_turn 会被设置，防止 LLM 重复发送。
         if self._message_tool is not None:
-            self._message_tool.set_pending_music(song_name, song_display)
+            # 通过 keyword args 触发 message tool 的 metadata 逻辑
+            await self._message_tool.execute(content=content, _music=song_name)
 
-        return f"好的，正在为你播放「{song_display}」！🎵"
+        return content
