@@ -121,15 +121,17 @@ class MessageTool(Tool):
 
         # _music 可由调用方直接传入（PlayMusicTool），也可来自 _pending_music（兼容旧逻辑）
         music_value = _music or (self._pending_music[0] if self._pending_music else None)
+        meta: dict[str, Any] = {}
+        if message_id is not None:
+            meta["message_id"] = message_id
+        if music_value is not None:
+            meta["_music"] = music_value
         msg = OutboundMessage(
             channel=channel,
             chat_id=chat_id,
             content=content,
             media=media or [],
-            metadata={
-                "message_id": message_id,
-                "_music": music_value,
-            } if message_id else {},
+            metadata=meta,
         )
 
         try:
