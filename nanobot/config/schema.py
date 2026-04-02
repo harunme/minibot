@@ -246,6 +246,42 @@ class ToolsConfig(Base):
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
+class ChromaDBConfig(Base):
+    """ChromaDB 向量数据库配置（V2 VectorStoreProvider 默认实现）
+
+    数据目录按租户隔离：{data_dir}/{tenant_id}/
+    """
+
+    data_dir: str = "~/.nanobot/vectorstore"
+    collection_name: str = "knowledge"
+    embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    allow_reset: bool = False  # 禁止在生产环境重置 collection
+
+
+class MilvusConfig(Base):
+    """Milvus 向量数据库配置（预留扩展）"""
+
+    uri: str = "http://localhost:19530"
+    token: str = ""
+
+
+class EmbeddingConfig(Base):
+    """Embedding 生成配置"""
+
+    provider: str = "sentence_transformers"  # sentence_transformers / dashscope
+    sentence_transformers: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    dashscope_api_key: str = ""
+
+
+class VectorStoreConfig(Base):
+    """向量数据库配置（V2 RAG 知识库核心配置）"""
+
+    provider: str = "chromadb"  # chromadb / milvus / none
+    chromadb: ChromaDBConfig = Field(default_factory=ChromaDBConfig)
+    milvus: MilvusConfig = Field(default_factory=MilvusConfig)
+    embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+
+
 class Config(BaseSettings):
     """Root configuration for nanobot."""
 
@@ -258,6 +294,7 @@ class Config(BaseSettings):
     asr: ASRConfig = Field(default_factory=ASRConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     vad: VADConfig = Field(default_factory=VADConfig)
+    vectorstore: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
 
     @property
     def workspace_path(self) -> Path:

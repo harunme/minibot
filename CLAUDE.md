@@ -1,7 +1,7 @@
 # CLAUDE.md — AI 辅助开发约束文档
 
 > **适用范围**：本项目（MiniBot / nanobot-ai）所有 AI 辅助开发  
-> **最后更新**：2026-03-30  
+> **最后更新**：2026-04-02  
 > **优先级**：本文件中的规则优先于 `docs/` 下任何文档。如有冲突，以本文件为准。
 
 <!-- 
@@ -20,14 +20,24 @@
 
 ## 0.1 当前进度
 
-> V1.0 范围为 M1-M4（核心对话链路），多租户+管理后台已推迟到 V3.5，Kids-Chat 推迟到 V2.0。详见 ROADMAP.md 和 DECISIONS.md。
+> V1.0 范围（M1-M4）全部完成，后续版本待启动。详见 ROADMAP.md 和 DECISIONS.md。
 
 | 里程碑 | 状态 | 说明 |
 |--------|------|------|
 | M1 - 设计评审 | ✅ 完成 | V1_DESIGN.md 已评审通过 |
 | M2 - WebSocket 通道 | ✅ 完成 | WebSocket Channel（面向 Tauri/Web）+ 测试客户端 |
 | M3 - ASR/TTS | ✅ 完成 | 火山引擎 WebSocket 客户端（ASRProvider + TTSProvider） |
-| M4 - 对话链路 | ⏳ 未开始 | 全链路打通（单租户） |
+| M4 - 对话链路 | ✅ 完成 | 全链路打通（WebSocket Voice + ASR + TTS + VAD） |
+
+### V2.0 — 知识库与内容管理
+
+| 里程碑 | 状态 | 说明 |
+|--------|------|------|
+| VectorStoreProvider | ✅ 完成 | 抽象基类 + ChromaDB 实现 + EmbeddingProvider |
+| knowledge_search Tool | ✅ 完成 | Agent 可主动检索 ChromaDB 知识库 |
+| 文档解析管线 | ✅ 完成 | PDF/文本解析 + 分块入库（DocumentIngestor） |
+| 配置扩展 | ✅ 完成 | VectorStoreConfig + ChromaDBConfig + EmbeddingConfig |
+| 测试 | ✅ 完成 | 42 个新测试全部通过 |
 
 ---
 
@@ -63,7 +73,7 @@ python tools/ws_test_client.py --device dev001 --url ws://localhost:9000 --mic -
 | **代码风格** | Ruff（line-length=100, rules E/F/I/N/W, E501 忽略） |
 | **异步运行时** | asyncio（全异步架构） |
 | **测试框架** | pytest + pytest-asyncio（asyncio_mode = "auto"） |
-| **当前目标** | V1.0 — 核心对话链路 MVP |
+| **当前目标** | V2.0 — 知识库与内容管理（P0 完成） |
 
 ---
 
