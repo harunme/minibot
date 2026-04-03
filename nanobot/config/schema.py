@@ -131,6 +131,9 @@ class VolcengineTTSConfig(Base):
     authorization: str = "Bearer "  # Authorization 前缀，默认 "Bearer "（可为空字符串直接填完整 token）
     cluster: str = "volcano_tts"
     default_voice: str = "zh_female_cancan_mars_bigtts"
+    speed_ratio: float = 1.0  # 语速（0.1-3.0），默认 1.0 正常语速
+    pitch_ratio: float = 1.0  # 音调（0.1-3.0），默认 1.0 正常音调
+    volume_ratio: float = 1.0  # 音量（0.1-3.0），默认 1.0 正常音量
 
 
 class SileroVADConfig(Base):

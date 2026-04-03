@@ -104,6 +104,9 @@ class VolcengineTTSProvider(TTSProvider):
         authorization: str = "Bearer ",
         cluster: str = "volcano_tts",
         default_voice: str = "zh_female_cancan_mars_bigtts",
+        speed_ratio: float = 1.0,
+        pitch_ratio: float = 1.0,
+        volume_ratio: float = 1.0,
     ):
         """
         初始化火山引擎 TTS Provider。
@@ -114,12 +117,18 @@ class VolcengineTTSProvider(TTSProvider):
             authorization: Authorization 前缀，默认 "Bearer "
             cluster: TTS 集群
             default_voice: 默认音色 ID
+            speed_ratio: 默认语速（0.1-3.0）
+            pitch_ratio: 默认音调（0.1-3.0）
+            volume_ratio: 默认音量（0.1-3.0）
         """
         self._appid = appid or ""
         self._token = token or ""
         self._authorization = authorization
         self._cluster = cluster
         self._default_voice = default_voice
+        self._speed_ratio = speed_ratio
+        self._pitch_ratio = pitch_ratio
+        self._volume_ratio = volume_ratio
         self._api_url = VOLCENGINE_TTS_API_URL
 
         # 预置音色表
@@ -157,10 +166,14 @@ class VolcengineTTSProvider(TTSProvider):
             音频数据块（流式输出，每块 8192 bytes）
         """
         voice = voice_id if voice_id != "default" else self._default_voice
+        # 允许调用方覆盖，也使用实例默认值（从 config 初始化）
+        effective_speed = speed_ratio if speed_ratio != 1.0 else self._speed_ratio
+        effective_pitch = pitch_ratio if pitch_ratio != 1.0 else self._pitch_ratio
+        effective_volume = volume_ratio if volume_ratio != 1.0 else self._volume_ratio
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                payload = self._build_request(text, voice, audio_format, speed_ratio, volume_ratio, pitch_ratio)
+                payload = self._build_request(text, voice, audio_format, effective_speed, effective_volume, effective_pitch)
                 headers = self._get_headers()
                 logger.debug("[TTS] 发送请求: {}", json.dumps(payload, ensure_ascii=False))
                 response = await client.post(self._api_url, json=payload, headers=headers)
@@ -294,6 +307,9 @@ def create_tts_provider(config: TTSConfig) -> TTSProvider:
             authorization=config.volcengine.authorization,
             cluster=config.volcengine.cluster,
             default_voice=config.volcengine.default_voice,
+            speed_ratio=config.volcengine.speed_ratio,
+            pitch_ratio=config.volcengine.pitch_ratio,
+            volume_ratio=config.volcengine.volume_ratio,
         )
     else:
         raise ValueError(f"不支持的 TTS Provider: {provider_name}")

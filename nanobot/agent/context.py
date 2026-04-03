@@ -25,7 +25,9 @@ class ContextBuilder:
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
 
-    def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
+    def build_system_prompt(
+        self, skill_names: list[str] | None = None, *, channel: str | None = None,
+    ) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         parts = [self._get_identity()]
 
@@ -51,6 +53,16 @@ The following skills extend your capabilities. To use a skill, read its SKILL.md
 Skills with available="false" need dependencies installed first - you can try installing them with apt/brew.
 
 {skills_summary}""")
+
+        # Voice channel: inject oral-friendly communication guidelines
+        if channel == "websocket_voice":
+            parts.append("""## Voice Interaction Guidelines
+
+When the user is interacting via voice (WebSocket Voice channel):
+- Prefer natural, fluent oral expressions. Use "首先、其次、最后" or "第一、第二、第三" for multi-point explanations instead of numbered/bulleted lists.
+- Avoid Markdown formatting structures: tables, code fences ```, multi-level lists. If you need to present structured information, use natural paragraphs instead.
+- If you must include code or technical content, describe it briefly rather than using code blocks.
+- Keep sentences reasonably concise so TTS output is comfortable to listen to.""")
 
         return "\n\n---\n\n".join(parts)
 
@@ -144,7 +156,7 @@ IMPORTANT: To send files (images, documents, audio, video) to the user, you MUST
             merged = [{"type": "text", "text": runtime_ctx}] + user_content
 
         return [
-            {"role": "system", "content": self.build_system_prompt(skill_names)},
+            {"role": "system", "content": self.build_system_prompt(skill_names, channel=channel)},
             *history,
             {"role": current_role, "content": merged},
         ]

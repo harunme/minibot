@@ -35,6 +35,7 @@ from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.providers.vad import VADState
 from nanobot.utils.audio import MusicPlayer, search_songs
+from nanobot.utils.text_normalizer import normalize_for_tts
 
 
 class MessageType(str, Enum):
@@ -566,9 +567,11 @@ class ConnectionHandler:
 
                 t_tts_first = 0.0
                 tts_sample_rate = self._channel._cfg("tts_sample_rate", 24000)
-                logger.info("[{}] TTS 开始合成: format=pcm, sample_rate={}", self.session_id, tts_sample_rate)
+                # Markdown → TTS 友好文本（去除表格/列表/代码块语法）
+                tts_text = normalize_for_tts(msg.content)
+                logger.info("[{}] TTS 开始合成: format=pcm, sample_rate={}, text_len={}", self.session_id, tts_sample_rate, len(tts_text))
                 audio_stream = tts_provider.synthesize(
-                    msg.content, audio_format="pcm", sample_rate=tts_sample_rate
+                    tts_text, audio_format="pcm", sample_rate=tts_sample_rate
                 )
                 sent_chunks = 0
                 sent_bytes = 0
